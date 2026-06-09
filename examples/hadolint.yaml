@@ -1,0 +1,11 @@
+# Example hadolint config for the checkup `hadolint` (Dockerfile) check.
+#
+# Copy to your project root as `.hadolint.yaml`.
+# checkup auto-detects a `Dockerfile*` at the repo root; override the filename with
+# HADOLINT_DOCKERFILE=Dockerfile.app ./bin/checkup.sh
+
+ignored:
+  # DL3008: pin apt-get versions. Relax if you pin your base image instead.
+  - DL3008
+
+failure-threshold: warning

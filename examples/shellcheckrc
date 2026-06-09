@@ -1,0 +1,9 @@
+# Example shellcheck config for the checkup `shellcheck` check.
+#
+# Copy to your project root as `.shellcheckrc`.
+# One disabled rule per line — keep a reason next to each so the suppression
+# stays honest.
+
+# SC1091: shellcheck can't follow `source` targets resolved at runtime
+# (dynamic paths, vendored files). Disable only if that noise is unavoidable.
+disable=SC1091

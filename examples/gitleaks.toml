@@ -1,0 +1,40 @@
+# Example gitleaks config for the checkup `gitleaks` (secret-scanning) check.
+#
+# Copy to your project root as `.gitleaks.toml` and tune the allowlist until
+# `gitleaks dir .` reports zero findings on a clean working tree — then any
+# future finding is a real signal worth gating on.
+#
+# checkup invokes: gitleaks dir --config .gitleaks.toml .
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project-specific exclusions"
+
+paths = [
+    # Generated / build / cache directories — no secrets, but high entropy.
+    '''node_modules/''',
+    '''dist/''',
+    '''build/''',
+    '''coverage/''',
+    '''reports/''',
+    # Lockfiles trip entropy heuristics on transitive package metadata.
+    '''package-lock\.json$''',
+    # Test fixtures often carry deliberate fake secrets.
+    '''__tests__/''',
+    '''\.test\.(ts|js|py|go)$''',
+    # Local-only env files. They're gitignored, but `gitleaks dir` walks the
+    # working tree regardless, so exclude them explicitly. Scope narrowly so a
+    # real key landing *outside* these paths still trips the scan.
+    '''^\.env(\..*)?$''',
+]
+
+# Stopwords — narrow, conventional placeholder shapes only. Deliberately avoid
+# broad words like "example" or "placeholder": an `EXAMPLE_API_KEY=<real value>`
+# in production code would then silence a genuine leak.
+stopwords = [
+    "your-key-here",
+    "your-secret-here",
+    "test-secret",
+]

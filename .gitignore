@@ -1,0 +1,11 @@
+# checkup writes its output into the *scanned* project under these paths. When you
+# run checkup against this repo itself (a handy self-test / graceful-degrade demo),
+# they show up here too — keep them out of version control.
+reports/
+docs/reports/
+
+# Node (only present if you add JS-based dev tooling here)
+node_modules/
+
+# OS cruft
+.DS_Store
