@@ -2304,7 +2304,14 @@ else
     EXIT_CODE=1
 fi
 
-# Generate committable report
+# Generate committable report. An overlay (e.g. checkup-dotnet) that appends its
+# own parsed/<slug>.json after this run sets CHECKUP_SKIP_REPORT=1 so the report
+# is rendered once, downstream, with every check included.
+if [ -n "${CHECKUP_SKIP_REPORT:-}" ]; then
+    echo ""
+    echo "📄 Report deferred (CHECKUP_SKIP_REPORT set) — overlay will render."
+    exit "$EXIT_CODE"
+fi
 echo ""
 echo "📄 Generating report..."
 if "$SCRIPT_DIR/checkup-report.sh" > /dev/null 2>&1; then

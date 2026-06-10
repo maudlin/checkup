@@ -65,9 +65,25 @@ git-forensics checks have history.
 What runs in `checkup-core`: the cross-stack security, hygiene and forensics
 checks (secrets, SAST, shell/YAML/Dockerfile lint, stats, churn × complexity).
 Language- and build-specific checks (typecheck, test, build, coverage) belong
-to per-stack images — see [`ROADMAP.md`](ROADMAP.md). On a non-Node repo these
-currently report `fail` rather than `skip` (a known gap — they'll be gated by
-per-stack profiles); read the cross-stack sections for the core signal.
+to per-stack images — see [`ROADMAP.md`](ROADMAP.md). On a repo without the Node
+toolchain they `skip` honestly (they don't fail or false-pass); read the
+cross-stack sections for the core signal.
+
+#### `checkup-dotnet` overlay (.NET / legacy ASP)
+
+`FROM checkup-core` plus the .NET SDK and Microsoft DevSkim. Runs every core
+check, then adds three .NET / legacy-ASP passes — **asp-classic** (semgrep
+ruleset for Classic ASP/VBScript), **devskim** (source SAST, no build, reaches
+.NET Framework source), and **dotnet-vuln** (`dotnet list package --vulnerable`,
+which skips honestly on legacy `packages.config` trees). New findings flow into
+the same report automatically (the renderer is tool-agnostic).
+
+```bash
+docker build -t checkup-core .                        # base first
+docker build -f Dockerfile.dotnet -t checkup-dotnet . # overlay
+
+docker run --rm -v "/path/to/app:/src:ro" -v "$PWD/out:/out" checkup-dotnet
+```
 
 The report location is controlled by **`CHECKUP_OUT_DIR`** (set to `/out` in
 the image): set it in any context to write outputs outside the scanned tree.
@@ -80,6 +96,7 @@ Unset, checkup keeps the committed `docs/reports/checkup-report.md` convention.
 | Script                  | Purpose                                                                                                |
 | ----------------------- | ------------------------------------------------------------------------------------------------------ |
 | `bin/checkup.sh`        | Orchestrator. Sources `lib/run-tool.sh`, runs every check, emits the normalised stream.                |
+| `bin/checkup-dotnet.sh` | .NET / legacy-ASP overlay. Runs core, then appends asp-classic + devskim + dotnet-vuln, renders once.  |
 | `bin/checkup-report.sh` | Tool-agnostic markdown renderer. Reads `reports/parsed/*.json` → writes the report.                    |
 | `lib/run-tool.sh`       | Shared helpers (`run_tool`, `write_parsed`, `write_skipped`, `write_failed`, `is_valid_json`, `slug`). |
 
