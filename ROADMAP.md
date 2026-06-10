@@ -134,15 +134,48 @@ chasing every esoteric build system.
   in node-less core they simply skip, but Phase 2 profiles must align them.
 - **Report prose paths.** A couple of the rendered report's references
   (`reports/by-file.json`) are literal; make them reflect `CHECKUP_OUT_DIR`.
-- **Project-built checks report `fail`, not `skip`, when their toolchain is
-  absent.** On a non-Node repo (or the node-less `checkup-core`),
-  typecheck / test / build / code-quality / coverage / circular-deps /
-  duplication / npm-audit show red `fail` rather than `skip — tool absent`.
-  For a DD report that "wall of red" is misleading. The proper fix is the
-  Phase-2 profile gating (run a project-built check only when its profile /
-  toolchain is present); a stop-gap is a `LAST_EXIT == 127 → write_skipped`
-  guard at the top of each npm-driven section (the documented graceful-degrade
-  pattern several of these sections currently skip).
+- **Project-built checks mislead when their toolchain is absent — FIXED in v1
+  (honesty stop-gap); deeper profile gating still Phase 2.** Empirically
+  measured by running `checkup-core` against a real-world Node/TypeScript repo with a
+  `:ro` source mount carrying prior build artifacts. The node-less checks had
+  split into three failure modes, _two worse than the "wall of red":_
+  - _False `pass` from stale artifacts in the mounted source (most dangerous)._
+    `coverage` (reads `coverage/coverage-summary.json`), `duplication`
+    (`reports/jscpd/jscpd-report.json`) and `circular-deps`
+    (`reports/madge-circular.json`) parsed a pre-existing file and reported a
+    confident green despite running no tool. A plain `127 → skip` guard does not
+    fix these — they never reach 127, they find a file.
+  - _False `pass` from empty-output-on-127._ `type-aware-lint`,
+    `deps-freshness`, `unused-code` (and the above before their file read)
+    inverted: the absent tool exits 127 with no output, read as "no findings →
+    pass." Measured inversion: `type-aware-lint` went `fail/473` (native) →
+    `pass/0` (core) on the same commit.
+  - _Honest-ish `fail` (exit 127 surfaced)._ `unit-tests`, `build`, `npm-audit`,
+    `typecheck`, `code-quality` failed — some with misleading summaries
+    ("0 TypeScript compilation errors" while failing).
+
+  **Fix shipped** (`lib/run-tool.sh` + `bin/checkup.sh`): two helpers —
+  `toolchain_absent` (true on `LAST_EXIT == 127`, which `run_tool` already sets
+  when `npm`/`npx` is off PATH _and_ for `npm run <missing-script>`) and
+  `is_fresh <file> <marker>` (artifact newer than a marker touched just before
+  the run). Every project-built section now gates: `toolchain_absent → skip` for
+  all eleven, plus `is_fresh` on the three external-artifact readers (coverage /
+  duplication / circular-deps) so a stale report is never trusted even when the
+  toolchain _is_ present but the tool failed. `MAX_SCORE` is added only on the
+  run path, so a skip neither inflates the denominator nor counts as failure.
+  Validated on that repo: `checkup-core` now reports all eleven as honest `skip` and
+  scores `23/30` (cross-stack only) instead of a misleading `58/160 CRITICAL`;
+  the native (node-present) run is unchanged at `145/160`, with coverage /
+  duplication / circular-deps / type-aware-lint identical to baseline.
+
+  Correct-by-design and unchanged: `git-hotspots` `skip`s in core — it is
+  churn × _complexity_ and complexity is eslint-driven, so the hotspot axis is
+  node-gated (coupling / bug-fix-density / branch-hygiene are pure-git and run
+  fine). **Deeper fix still owed in Phase 2:** profile gating (decide a check
+  applies from the detected stack, not just from a 127 at runtime) and aligning
+  the npm-tool report paths to `CHECKUP_OUT_DIR` so artifacts land outside the
+  source tree rather than relying on the freshness marker.
+
 - **Run the image as non-root.** Checkup's own semgrep check flags
   `missing-user-entrypoint` on this Dockerfile (dogfooding — it runs as root).
   v1 stays root so writes to a bind-mounted `/out` "just work" regardless of

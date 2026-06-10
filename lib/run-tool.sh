@@ -46,6 +46,28 @@ is_valid_json() {
     [ -s "$1" ] && jq -e . "$1" >/dev/null 2>&1
 }
 
+# toolchain_absent — true when the most recent run_tool call's command was not
+# on PATH (LAST_EXIT 127; run_tool also promotes `npm run <missing-script>` to
+# 127). Stack-specific sections (typecheck, test, build, lint, coverage, …) gate
+# on this so a missing toolchain yields an honest `skip` rather than a misread:
+# a missing tool produces empty output that naive parsers count as "zero
+# findings → pass", or a non-zero exit they record as a real failure. This is
+# the graceful-degrade path run_tool's 127 contract was written to feed.
+toolchain_absent() {
+    [ "${LAST_EXIT:-0}" = "127" ]
+}
+
+# is_fresh <path> <marker> — true if <path> is valid JSON AND newer than
+# <marker> (a file touched immediately before the tool ran). Guards artifact
+# readers (coverage, duplication) against trusting a stale report left in the
+# source tree by a prior build when the current run produced nothing — e.g. the
+# tool is absent, or present-but-failed. Without it those checks parse the
+# pre-existing file and emit a confident false `pass`. Relies on sub-second
+# mtime (ext4 et al.); the tool runs after the marker so its output sorts newer.
+is_fresh() {
+    [ -f "$1" ] && [ "$1" -nt "$2" ] && is_valid_json "$1"
+}
+
 # run_tool "<label>" <cmd> [args…]
 #
 # Captures stdout to $RAW_DIR/<slug>.txt and stderr to $RAW_DIR/<slug>.stderr.txt

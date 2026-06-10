@@ -104,8 +104,12 @@ TS_INTENT=$(jq -n '{
     fail_means: "Any error blocks deploy. Fix in source — avoid `any`/`@ts-ignore` which defer the problem to runtime."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 25))
 run_tool "TypeScript Type Checking" npm run typecheck
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "typecheck" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$TS_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 25))
 if [ "$LAST_EXIT" = "0" ]; then
     echo -e "${GREEN}✅ TypeScript compilation successful (25/25)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 25))
@@ -143,6 +147,7 @@ else
     echo "Run 'npm run typecheck' to see errors."
     write_parsed "typecheck" "fail" "$TS_ERROR_COUNT" "$TS_ERROR_COUNT TypeScript compilation errors" "$TS_TOP" "$TS_INTENT"
 fi
+fi
 echo ""
 
 # 2. Unit Tests
@@ -164,8 +169,12 @@ UT_INTENT=$(jq -n '{
     fail_means: "Any failure blocks deploy. Investigate root cause; never skip or comment out a failing test."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 30))
 run_tool "Unit Tests" npm test
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "unit-tests" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$UT_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 30))
 # Vitest's summary uses ANSI; strip before regex.
 TEST_OUTPUT_CLEAN=$(sed "s/${ESC}\[[0-9;]*m//g" "$LAST_RAW")
 
@@ -206,6 +215,7 @@ else
         write_parsed "unit-tests" "fail" 0 "No tests detected in vitest output" '[]' "$UT_INTENT"
     fi
 fi
+fi
 echo ""
 
 # 3. Code Quality (Formatting + Linting)
@@ -229,10 +239,13 @@ CQ_INTENT=$(jq -n '{
     fail_means: "Any ESLint error or prettier needing to rewrite files. Auto-fix: `npm run format` and `npm run lint:fix`."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 15))
-
 # Formatting — binary outcome
 run_tool "Code Quality Format" npm run format:check
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "code-quality" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$CQ_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 15))
 FORMAT_OK="true"
 if [ "$LAST_EXIT" != "0" ]; then
     FORMAT_OK="false"
@@ -306,6 +319,7 @@ else
 fi
 TOTAL_FINDINGS=$((ERROR_COUNT + WARNING_COUNT))
 write_parsed "code-quality" "$CQ_STATUS" "$TOTAL_FINDINGS" "$CQ_SUMMARY" "$LINT_TOP_JSON" "$CQ_INTENT"
+fi
 echo ""
 
 # 3b. Type-Aware Lint Rules
@@ -336,8 +350,12 @@ if [ ! -f eslint.config.type-aware.js ]; then
     echo -e "${BLUE}ℹ️  Skipped (no eslint.config.type-aware.js in project root)${NC}"
     write_skipped "type-aware-lint" "no eslint.config.type-aware.js in project root — supply one to enable" "$TAL_INTENT"
 else
-MAX_SCORE=$((MAX_SCORE + 5))
 run_tool "Type-Aware Lint Rules" npx eslint -c eslint.config.type-aware.js
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npx) not on PATH${NC}"
+    write_skipped "type-aware-lint" "Node toolchain (npx) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$TAL_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
 
 # Same summary-line anchor as section 3 (avoids the fixable-count undercount)
 TYPE_LINT_SUMMARY=$(grep -E '^✖ [0-9]+ problems?' "$LAST_RAW" | tail -1)
@@ -395,6 +413,7 @@ else
 fi
 write_parsed "type-aware-lint" "$TAL_STATUS" "$TAL_TOTAL" "$TAL_SUMMARY" "$TAL_TOP_JSON" "$TAL_INTENT"
 fi
+fi
 echo ""
 
 # 4. Production Build
@@ -417,8 +436,12 @@ BUILD_INTENT=$(jq -n '{
     fail_means: "Build failed. Common causes: missing peer dep, dev-only env pattern in shipped code, server import from client."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 20))
 run_tool "Production Build" npm run build
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "build" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$BUILD_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 20))
 if [ "$LAST_EXIT" = "0" ]; then
     echo -e "${GREEN}✅ Production build successful (20/20)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 20))
@@ -436,6 +459,7 @@ else
     echo -e "${RED}❌ Build failed (0/20)${NC}"
     echo "Run 'npm run build' to see errors."
     write_parsed "build" "fail" 1 "Production build failed (exit $LAST_EXIT)" "$BUILD_TOP" "$BUILD_INTENT"
+fi
 fi
 echo ""
 
@@ -534,8 +558,12 @@ AUDIT_INTENT=$(jq -n '{
     fail_means: "Any critical advisory; high = warn. Run `npm audit fix` for auto-resolvable cases."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 10))
 run_tool "Security Vulnerabilities" npm audit --json
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "npm-audit" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$AUDIT_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 10))
 # npm audit exits non-zero (1) when any advisory exists. That's expected;
 # $LAST_EXIT does not signal a true failure here. Validate the JSON instead.
 if [ ! -s "$LAST_RAW" ] || ! is_valid_json "$LAST_RAW"; then
@@ -585,6 +613,7 @@ else
 
     write_parsed "npm-audit" "$AUDIT_STATUS" "$TOTAL" "$AUDIT_SUMMARY" "$AUDIT_TOP" "$AUDIT_INTENT"
 fi
+fi
 echo ""
 
 # 7. Dependency Freshness
@@ -607,8 +636,12 @@ DEPS_INTENT=$(jq -n '{
     fail_means: ">10 outdated = warning zone; schedule a sweep. Critical drift (>20) makes eventual upgrades painful."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 5))
 run_tool "Dependency Freshness" npm outdated --json
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "deps-freshness" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$DEPS_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
 # npm outdated exits 1 when outdated packages exist (expected); empty output
 # means everything is current. Validate JSON before parsing.
 if [ ! -s "$LAST_RAW" ]; then
@@ -649,6 +682,7 @@ else
     echo "Run 'npm outdated' for details and 'npm update' to update."
     write_parsed "deps-freshness" "$DEPS_STATUS" "$OUTDATED_COUNT" "$OUTDATED_COUNT outdated packages (top 10 listed)" "$DEPS_TOP" "$DEPS_INTENT"
 fi
+fi
 echo ""
 
 # 8. Circular Dependencies (madge)
@@ -670,12 +704,19 @@ MADGE_INTENT=$(jq -n '{
     fail_means: "Any cycle is a refactoring TODO. Extract shared types/values into a leaf module or invert an edge."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 5))
+MADGE_MARKER="$RAW_DIR/.circular-deps.marker"; : > "$MADGE_MARKER"
 run_tool "Circular Dependencies" npm run quality:deps
-if [ ! -f reports/madge-circular.json ] || ! is_valid_json reports/madge-circular.json; then
-    echo -e "${YELLOW}⚠️  Madge scan produced no report (3/5)${NC}"
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "circular-deps" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$MADGE_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
+# Trust only a report this run produced — a stale reports/madge-circular.json
+# from a prior build would otherwise read as a confident "no cycles" pass.
+if ! is_fresh reports/madge-circular.json "$MADGE_MARKER"; then
+    echo -e "${YELLOW}⚠️  Madge scan produced no fresh report (3/5)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 3))
-    write_failed "circular-deps" "reports/madge-circular.json missing or malformed (exit $LAST_EXIT)" "$MADGE_INTENT"
+    write_failed "circular-deps" "no fresh reports/madge-circular.json produced this run (exit $LAST_EXIT) — stale report ignored" "$MADGE_INTENT"
 else
     CIRCULAR_COUNT=$(jq 'length' reports/madge-circular.json)
     if [ "$CIRCULAR_COUNT" = "0" ]; then
@@ -701,6 +742,7 @@ else
         write_parsed "circular-deps" "fail" "$CIRCULAR_COUNT" "$CIRCULAR_COUNT import cycles detected" "$MADGE_TOP" "$MADGE_INTENT"
     fi
 fi
+fi
 echo ""
 
 # 9. Code Duplication (jscpd)
@@ -722,12 +764,19 @@ JSCPD_INTENT=$(jq -n '{
     fail_means: "≥5% duplication. Refactor toward shared helpers when the same pattern recurs 3+ times."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 5))
+JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
 run_tool "Code Duplication" npm run quality:duplicates
-if [ ! -f reports/jscpd/jscpd-report.json ] || ! is_valid_json reports/jscpd/jscpd-report.json; then
-    echo -e "${YELLOW}⚠️  jscpd scan produced no report (3/5)${NC}"
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "duplication" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$JSCPD_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
+# Trust only a report this run produced — a stale reports/jscpd/jscpd-report.json
+# would otherwise read as a confident low-duplication pass.
+if ! is_fresh reports/jscpd/jscpd-report.json "$JSCPD_MARKER"; then
+    echo -e "${YELLOW}⚠️  jscpd scan produced no fresh report (3/5)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 3))
-    write_failed "duplication" "reports/jscpd/jscpd-report.json missing or malformed (exit $LAST_EXIT)" "$JSCPD_INTENT"
+    write_failed "duplication" "no fresh reports/jscpd/jscpd-report.json produced this run (exit $LAST_EXIT) — stale report ignored" "$JSCPD_INTENT"
 else
     DUPLICATION_PCT=$(jq -r '.statistics.total.percentage' reports/jscpd/jscpd-report.json)
     DUPLICATION_INT=$(echo "$DUPLICATION_PCT" | awk '{print int($1)}')
@@ -762,6 +811,7 @@ else
     fi
     write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines" "$JSCPD_TOP" "$JSCPD_INTENT"
 fi
+fi
 echo ""
 
 # 10. Unused Code Detection (knip)
@@ -784,8 +834,12 @@ KNIP_INTENT=$(jq -n '{
     fail_means: "5+ critical issues. Delete dead code or add to knips allowlist with justification."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 5))
 run_tool "Unused Code Detection" npm run quality:unused
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "unused-code" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$KNIP_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
 KNIP_OUTPUT=$(cat "$LAST_RAW")
 
 # Count by category — portable sed extraction (BSD grep has no -P / \K).
@@ -852,6 +906,7 @@ else
     KNIP_SUMMARY="$CRITICAL_ISSUES critical, $TOTAL_ISSUES total unused entries"
 fi
 write_parsed "unused-code" "$KNIP_STATUS" "$TOTAL_ISSUES" "$KNIP_SUMMARY" "$KNIP_TOP" "$KNIP_INTENT"
+fi
 echo ""
 
 # 11. Test Coverage
@@ -877,13 +932,22 @@ COVERAGE_INTENT=$(jq -n '{
     fail_means: "Generation failed or stmt coverage <50%. Investigate test failures or recent untested merges."
 }')
 
-MAX_SCORE=$((MAX_SCORE + 5))
+COV_MARKER="$RAW_DIR/.coverage.marker"; : > "$COV_MARKER"
 run_tool "Test Coverage" npm run test:coverage:report
-if [ "$LAST_EXIT" != "0" ] && [ ! -f coverage/coverage-summary.json ]; then
+if toolchain_absent; then
+    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
+    write_skipped "coverage" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$COVERAGE_INTENT"
+else
+MAX_SCORE=$((MAX_SCORE + 5))
+# Trust only a summary this run produced — a stale coverage/coverage-summary.json
+# (or a leftover coverage/ dir) would otherwise read as a confident pass.
+COV_FRESH=false
+is_fresh coverage/coverage-summary.json "$COV_MARKER" && COV_FRESH=true
+if [ "$LAST_EXIT" != "0" ] && [ "$COV_FRESH" = false ]; then
     echo -e "${RED}❌ Coverage generation failed (0/5)${NC}"
     echo "Run 'npm run test:coverage:report' to see errors."
-    write_failed "coverage" "coverage generation failed (exit $LAST_EXIT) and no coverage-summary.json present" "$COVERAGE_INTENT"
-elif [ -f coverage/coverage-summary.json ] && is_valid_json coverage/coverage-summary.json; then
+    write_failed "coverage" "coverage generation failed (exit $LAST_EXIT) and no fresh coverage-summary.json present — stale report ignored" "$COVERAGE_INTENT"
+elif [ "$COV_FRESH" = true ]; then
     # v8 coverage produces coverage-summary.json with .total.{statements,branches,functions,lines}.pct
     STMT_PCT=$(jq -r '.total.statements.pct // 0' coverage/coverage-summary.json)
     BRANCH_PCT=$(jq -r '.total.branches.pct // 0' coverage/coverage-summary.json)
@@ -907,16 +971,17 @@ elif [ -f coverage/coverage-summary.json ] && is_valid_json coverage/coverage-su
     write_parsed "coverage" "$COV_STATUS" "$STMT_INT" \
         "stmts ${STMT_PCT}%, branches ${BRANCH_PCT}%, fns ${FN_PCT}%, lines ${LINE_PCT}%" \
         '[]' "$COVERAGE_INTENT"
-elif [ -d coverage ]; then
-    # Report generated but no summary JSON to parse
+elif [ "$LAST_EXIT" = "0" ] && [ -d coverage ]; then
+    # Tool succeeded this run but emitted no summary JSON (HTML-only setups)
     echo -e "${GREEN}✅ Coverage report generated (5/5)${NC}"
     echo "   View detailed report: open coverage/index.html"
     HEALTH_SCORE=$((HEALTH_SCORE + 5))
     write_parsed "coverage" "pass" 0 "Coverage report generated (no summary JSON available)" '[]' "$COVERAGE_INTENT"
 else
-    echo -e "${YELLOW}⚠️  Coverage ran but no output detected (3/5)${NC}"
+    echo -e "${YELLOW}⚠️  Coverage ran but no fresh output detected (3/5)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 3))
-    write_failed "coverage" "no coverage/ directory or summary file found after run" "$COVERAGE_INTENT"
+    write_failed "coverage" "no fresh coverage output produced this run — stale report ignored" "$COVERAGE_INTENT"
+fi
 fi
 echo ""
 # 12. Codebase Statistics (scc)
