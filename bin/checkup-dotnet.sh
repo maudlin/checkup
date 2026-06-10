@@ -201,6 +201,84 @@ else
 fi
 echo ""
 
+# ---- 2d. Code duplication (PMD CPD — language-aware, no build) ----
+print_overlay_section "Code Duplication (PMD CPD)"
+CPD_INTENT=$(jq -n '{
+    purpose:    "Copy-paste detection via PMD CPD — language-aware tokenisation (C# and many others), no build required. Replaces the Node-only jscpd duplication check on non-Node stacks. High duplication signals missed abstraction and multiplies maintenance cost.",
+    pass_means: "No clone blocks at/above the token threshold in the tokenised languages.",
+    fail_means: "Clone blocks found — refactor toward shared helpers. Reported as warn. NOTE: Classic ASP/VBScript has no CPD tokeniser, so .asp duplication is NOT measured here."
+}')
+if ! command -v pmd > /dev/null 2>&1; then
+    echo -e "${YELLOW}⏭️  PMD CPD not installed${NC}"
+    write_skipped "duplication" "PMD CPD not on PATH" "$CPD_INTENT"
+else
+    # Languages CPD can tokenise that are present. C# is the overlay's focus;
+    # add ecmascript when .js exists. (Classic ASP has no CPD tokeniser.)
+    CPD_LANGS="cs"
+    [ -n "$(find . -name '*.js' -not -path '*/node_modules/*' -print -quit 2>/dev/null)" ] && CPD_LANGS="$CPD_LANGS ecmascript"
+    DUP_ALL='[]'
+    CPD_ERR=0
+    for lang in $CPD_LANGS; do
+        run_tool "Code Duplication ($lang)" pmd cpd \
+            --minimum-tokens 100 --dir . --language "$lang" \
+            --format xml --no-fail-on-violation
+        # CPD's XML report starts with a '<' tag. Empty / non-XML output means
+        # the invocation failed (bad flag, no tokeniser) — must NOT be read as
+        # "zero clones → pass". Flag it so the section fails honestly.
+        if ! head -c 64 "$LAST_RAW" 2>/dev/null | grep -q '<'; then
+            CPD_ERR=1
+            echo -e "${YELLOW}  $lang: CPD produced no XML (exit $LAST_EXIT)${NC}"
+            continue
+        fi
+        FINDINGS=$(python3 - "$LAST_RAW" "$lang" <<'PY'
+import sys, json
+import xml.etree.ElementTree as ET
+path, lang = sys.argv[1], sys.argv[2]
+try:
+    root = ET.parse(path).getroot()
+except Exception:
+    print('[]'); sys.exit(0)
+out = []
+# CPD's report uses a default XML namespace, so match element names with a
+# namespace wildcard ({*}) — a plain 'duplication' tag name finds nothing.
+for dup in root.findall('{*}duplication'):
+    n = int(dup.get('lines') or 0); toks = dup.get('tokens')
+    files = dup.findall('{*}file')
+    if not files:
+        continue
+    f0 = files[0]
+    others = ", ".join(f"{f.get('path')}:{f.get('line')}" for f in files[1:]) or "elsewhere"
+    out.append({
+        "file": f0.get('path'),
+        "line": int(f0.get('line') or 1),
+        "code": f"clone-{lang}",
+        "severity": "high" if n >= 100 else "warning",
+        "message": f"{n}-line clone ({toks} tokens) also at {others}",
+    })
+print(json.dumps(out))
+PY
+)
+        echo "$FINDINGS" | jq -e 'type=="array"' > /dev/null 2>&1 || FINDINGS='[]'
+        echo -e "${GREEN}  $lang: $(echo "$FINDINGS" | jq 'length') clone block(s)${NC}"
+        DUP_ALL=$(jq -s 'add' <(echo "$DUP_ALL") <(echo "$FINDINGS"))
+    done
+    DUP_TOTAL=$(echo "$DUP_ALL" | jq 'length')
+    DUP_TOP=$(echo "$DUP_ALL" | jq 'sort_by(- (.message | capture("(?<n>[0-9]+)-line") | .n | tonumber)) | .[0:10]')
+    if [ "$DUP_TOTAL" -eq 0 ] && [ "$CPD_ERR" = 1 ]; then
+        echo -e "${YELLOW}⚠️  CPD produced no parseable output${NC}"
+        write_failed "duplication" "PMD CPD produced no parseable output (exit $LAST_EXIT) — invocation error, not a clean result" "$CPD_INTENT"
+    elif [ "$DUP_TOTAL" -eq 0 ]; then
+        echo -e "${GREEN}No clone blocks ≥100 tokens${NC}"
+        write_parsed "duplication" "pass" 0 "No clone blocks ≥100 tokens (CPD: $CPD_LANGS)" '[]' "$CPD_INTENT"
+    else
+        echo -e "${GREEN}$DUP_TOTAL clone block(s)${NC}"
+        write_parsed "duplication" "warn" "$DUP_TOTAL" \
+            "$DUP_TOTAL clone block(s) ≥100 tokens (CPD: $CPD_LANGS; Classic ASP not tokenised)" \
+            "$DUP_TOP" "$CPD_INTENT"
+    fi
+fi
+echo ""
+
 # ---- 3. render once, with core + overlay findings ----
 echo -e "${BLUE}📄 Generating report…${NC}"
 if "$SCRIPT_DIR/checkup-report.sh" > /dev/null 2>&1; then

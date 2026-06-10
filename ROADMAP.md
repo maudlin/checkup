@@ -199,7 +199,7 @@ Windows filesystem via WSL. What it taught us:
   `scc --format json` (e.g. "top: ASP 25899, C# 20965, XSLT 3975") — meaningful
   on any stack.
 - **semgrep `--config auto` already earns its keep on C#.** 53 findings
-  (real SQLi + SSRF) in the `.aspx.cs` with zero .NET-specific setup — the
+  (real SQLi + SSRF) in the C# code-behind with zero .NET-specific setup — the
   cross-stack SAST value prop holds. The focused `p/csharp` pack was _narrower_
   (8 high-confidence SQLi), so `auto` is the workhorse; packs add precision.
 - **Classic ASP was the blind spot — and the biggest win.** `auto` found ~nothing
@@ -212,14 +212,74 @@ Windows filesystem via WSL. What it taught us:
 - **Still owed (Phase 3 `checkup-dotnet`):** the real .NET depth needs the SDK —
   `dotnet build`/`test`, **Security Code Scan**, `dotnet list package
 --vulnerable` (the npm-audit equivalent), devskim. None fit in node-less core.
-- **Complexity/hotspots are needlessly node-locked.** `scc` already computes
-  per-language complexity (it ran here: ASP 3912, C# 2092) but the `complexity`
-  and `git-hotspots` checks are eslint-driven, so both skip on non-JS repos. A
-  language-agnostic complexity source (scc's own numbers, or `lizard`) would
-  unlock hotspots for ASP/C#/Go/Python — high-value, stack-independent.
+- **Fixed — complexity/hotspots were needlessly node-locked.** The `complexity`
+  check now prefers ESLint (AST-accurate) for JS/TS but falls back to **scc's
+  per-file complexity** for any other language — no toolchain, covers C#, ASP,
+  Go, Python, … — and writes the same Tornhill CSV so **git-hotspots works on
+  any stack** too. Validated on a legacy ASP/C# app: complexity went `skip` →
+  `warn` (72 files over the heuristic band, top a ~1,700-line code-behind at
+  complexity 359); core on the checkup repo produced the CSV and hotspots
+  consumed it (skipped only on the legitimate ≥10-files quintile guard). Caveats:
+  scc complexity is a decision-keyword heuristic, not true per-function CCN
+  (documented in the check's intent; `lizard` is a future precision upgrade for
+  the languages it parses); and hotspots still needs real git **history**
+  (churn), so a non-git snapshot gets complexity ranking but not churn ×
+  complexity.
+- **Fixed (overlay) — duplication is no longer node-locked.** `checkup-dotnet`
+  bakes **PMD CPD** (+ JRE); the `duplication` check runs CPD for C# (and
+  ecmascript when present), replacing the Node-only jscpd path. Validated on a
+  legacy ASP/C# app: 133 clone blocks ≥100 tokens, top a 662-line clone plus
+  cross-site code-behind copies. Two false-pass traps caught while
+  wiring it (wrong CPD flag → empty output; XML default-namespace → parser found
+  nothing) — both now guarded (empty/non-XML output fails, never passes).
+  Remaining gaps: Classic ASP has no CPD tokeniser (so `.asp` duplication is
+  unmeasured); and CPD lives in the dotnet overlay only — a core-level
+  language-agnostic duplication tool would need a non-JVM/non-Node option.
 - **WSL/`/mnt` works but is slow.** drvfs (9p) makes full-tree walks sluggish;
   for a real audit, `git clone`/copy into the Linux fs first. Worked fine here
   (4MB), would bite on a large monorepo.
+
+## Candidate tools to add
+
+Beyond what's baked (gitleaks, semgrep, scc, shellcheck, yamllint, hadolint;
+overlay: DevSkim, PMD CPD, dotnet-vuln). Ranked by value/fit.
+
+**Universal (core-friendly — single static binaries, no runtime):**
+
+- **Trivy** _(highest-value add)_ — one Go binary doing SCA (dependency CVEs),
+  secret scan, IaC/misconfig, and SBOM. Crucially it scans **.NET
+  `packages.config` / `packages.lock.json` / `deps.json` WITHOUT a restore** —
+  i.e. it closes the exact `dotnet-vuln` gap that skipped on the legacy app, and does it
+  for npm/pip/go/etc. too. Static binary ⇒ belongs in `checkup-core`.
+- **OSV-Scanner** (Google, Go binary) — lockfile CVEs, lighter than Trivy;
+  alternative if Trivy's breadth is overkill.
+- **TruffleHog** — secret scanning with **live-credential verification** (would
+  tell us whether an exposed cloud key is still active, not just present). Strong
+  complement to gitleaks.
+- **lizard** (pip) — true multi-language cyclomatic complexity (C#, Java, Go,
+  Python, …). A precision upgrade over the current scc-heuristic complexity for
+  the languages it parses (it does **not** cover Classic ASP — keep scc as the
+  universal fallback).
+
+**Microsoft / .NET-specific (overlay):**
+
+- **`dotnet list package --deprecated`** — trivial companion to `--vulnerable`;
+  flags abandoned dependencies. Add alongside `dotnet-vuln`.
+- **BinSkim** (Microsoft) — PE/binary static analysis of compiled `.dll`/`.exe`
+  (ASLR/DEP/SafeSEH, signing) with **no source build** — useful for legacy
+  Framework apps where you only have `bin/`. (The legacy app shipped no
+  first-party DLLs, so low value _here_, high value generally.)
+- **.NET Portability Analyzer / Upgrade Assistant** (Microsoft) — quantifies
+  Framework→modern migration effort; a genuine DD signal ("how stuck is this?").
+- **Security Code Scan** / **SonarScanner for .NET** — the strongest .NET SAST
+  (SQLi/XSS/CSRF/XXE), but **build-time** (Roslyn) ⇒ needs a Windows/MSBuild
+  build, so out of scope for the Linux overlay; note for a CI-on-Windows path.
+
+**Known scoring limitation:** overlay checks (asp-classic, devskim, dotnet-vuln,
+duplication) append _after_ `checkup.sh` has computed and written the score, so
+they appear in the report's check list / Top Problems / by-file cross-cut but do
+**not** move the headline `score/maxScore`. Fold overlay checks into the score
+when the command-profile refactor (Phase 2) centralises scoring.
 
 ## Non-goals (for now)
 

@@ -71,12 +71,14 @@ cross-stack sections for the core signal.
 
 #### `checkup-dotnet` overlay (.NET / legacy ASP)
 
-`FROM checkup-core` plus the .NET SDK and Microsoft DevSkim. Runs every core
-check, then adds three .NET / legacy-ASP passes — **asp-classic** (semgrep
+`FROM checkup-core` plus the .NET SDK, Microsoft DevSkim and PMD CPD. Runs every
+core check, then adds four .NET / legacy-ASP passes — **asp-classic** (semgrep
 ruleset for Classic ASP/VBScript), **devskim** (source SAST, no build, reaches
-.NET Framework source), and **dotnet-vuln** (`dotnet list package --vulnerable`,
-which skips honestly on legacy `packages.config` trees). New findings flow into
-the same report automatically (the renderer is tool-agnostic).
+.NET Framework source), **dotnet-vuln** (`dotnet list package --vulnerable`,
+skips honestly on legacy `packages.config`), and **duplication** (PMD CPD —
+language-aware copy-paste detection for C# and other CPD languages; Classic ASP
+has no CPD tokeniser). New findings flow into the same report automatically (the
+renderer is tool-agnostic).
 
 ```bash
 docker build -t checkup-core .                        # base first
@@ -96,7 +98,7 @@ Unset, checkup keeps the committed `docs/reports/checkup-report.md` convention.
 | Script                  | Purpose                                                                                                |
 | ----------------------- | ------------------------------------------------------------------------------------------------------ |
 | `bin/checkup.sh`        | Orchestrator. Sources `lib/run-tool.sh`, runs every check, emits the normalised stream.                |
-| `bin/checkup-dotnet.sh` | .NET / legacy-ASP overlay. Runs core, then appends asp-classic + devskim + dotnet-vuln, renders once.  |
+| `bin/checkup-dotnet.sh` | .NET / legacy-ASP overlay. Runs core, then appends asp-classic + devskim + dotnet-vuln + duplication.  |
 | `bin/checkup-report.sh` | Tool-agnostic markdown renderer. Reads `reports/parsed/*.json` → writes the report.                    |
 | `lib/run-tool.sh`       | Shared helpers (`run_tool`, `write_parsed`, `write_skipped`, `write_failed`, `is_valid_json`, `slug`). |
 

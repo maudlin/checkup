@@ -1105,10 +1105,19 @@ COMPLEXITY_INTENT=$(jq -n '{
     fail_means: "Any function over CCN/cognitive 30 — refactor or cover with dedicated tests. 20-29 = warning."
 }')
 
-if ! command -v npx > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  npx not installed — ESLint complexity reporter unavailable${NC}"
-    write_skipped "complexity" "npx not installed — ESLint complexity reporter unavailable" "$COMPLEXITY_INTENT"
+# Resolve scc for the language-agnostic fallback (same probe as codebase-stats).
+CPLX_SCC=""
+if command -v scc > /dev/null 2>&1; then
+    CPLX_SCC="scc"
 else
+    for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { CPLX_SCC="$c"; break; }; done
+fi
+
+# Prefer ESLint for JS/TS (AST-accurate cyclomatic + cognitive); fall back to
+# scc's per-file complexity for any other language (no toolchain — covers C#,
+# ASP, Go, Python, …). Both write the same Tornhill CSV git-hotspots joins, so
+# the churn × complexity axis works on any stack, not just JS/TS.
+if command -v npx > /dev/null 2>&1; then
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
     echo ""
 
@@ -1228,6 +1237,76 @@ else
                 "$TOP_FINDINGS" "$COMPLEXITY_INTENT"
         fi
     fi
+elif [ -n "$CPLX_SCC" ]; then
+    echo -e "${GREEN}✅ scc available — language-agnostic complexity${NC}"
+    echo ""
+
+    SCC_CPLX_INTENT=$(jq -n '{
+        purpose:    "Rank files by complexity for any language using scc (no toolchain). scc complexity is a decision-keyword heuristic, not true per-function CCN — a solid relative signal that also feeds the churn × complexity git-hotspots join.",
+        pass_means: "No file over the heuristic complexity band (25).",
+        fail_means: "Files high on the heuristic are bug-incubators / refactor candidates — confirm with a language-aware tool. Reported as warn (heuristic, not a hard gate)."
+    }')
+
+    # Scan declared source roots if they exist, else the whole tree (legacy /
+    # non-standard layouts like a multi-site ASP app have neither src/ nor server/).
+    CPLX_ROOTS=()
+    for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && CPLX_ROOTS+=("$r"); done
+    [ "${#CPLX_ROOTS[@]}" -eq 0 ] && CPLX_ROOTS=(".")
+
+    run_tool "Complexity (scc)" "$CPLX_SCC" "${CPLX_ROOTS[@]}" \
+        --by-file --format json --no-cocomo \
+        --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist
+
+    if ! is_valid_json "$LAST_RAW"; then
+        echo -e "${YELLOW}⚠️  scc produced unparseable JSON (exit $LAST_EXIT)${NC}"
+        write_failed "complexity" "scc produced unparseable JSON (exit $LAST_EXIT)" "$SCC_CPLX_INTENT"
+    else
+        # Flatten per-file entries; rank by scc complexity. Severity bands are
+        # heuristic (scc complexity ≈ decision-keyword count), documented as such.
+        CPLX_FINDINGS=$(jq '
+            [ .[].Files[]?
+              | select((.Complexity // 0) > 0)
+              | { file: (.Location | sub("^\\./"; "")), line: 1, ccn: .Complexity, lines: .Lines,
+                  code: ("complexity-" + (.Complexity | tostring)),
+                  severity: (if .Complexity >= 100 then "high" elif .Complexity >= 50 then "warning" elif .Complexity >= 25 then "low" else "info" end),
+                  message: ((.Location | sub(".*/"; "")) + " — scc complexity " + (.Complexity | tostring) + " (" + (.Lines | tostring) + " lines)") }
+            ]
+            | sort_by(-.ccn)
+        ' "$LAST_RAW")
+
+        mkdir -p "$OUT_DIR"
+        : > "$OUT_DIR/complexity-full.csv"
+        # Tornhill-compatible CSV: col 2 = complexity, col 7 = file (git-hotspots
+        # reads only those). Same layout the ESLint path emits.
+        echo "$CPLX_FINDINGS" | jq -r '
+            .[] | [0, .ccn, 0, 0, 0, ("scc:" + .file), .file, (.file | sub(".*/"; "")), "", 1, 1] | @csv
+        ' > "$OUT_DIR/complexity-full.csv"
+
+        REPORTED=$(echo "$CPLX_FINDINGS" | jq '[.[] | select(.ccn >= 25)]')
+        TOTAL_COUNT=$(echo "$REPORTED" | jq 'length')
+        MAXC=$(echo "$CPLX_FINDINGS" | jq '([.[].ccn] | max) // 0')
+        TOP_FINDINGS=$(echo "$REPORTED" | jq 'sort_by(-.ccn) | .[0:20] | map(del(.ccn, .lines))')
+
+        if [ "$TOTAL_COUNT" -eq 0 ]; then
+            echo -e "${GREEN}✅ No files over scc complexity 25 (highest $MAXC)${NC}"
+            write_parsed "complexity" "pass" 0 "No files over scc complexity 25 (heuristic; highest $MAXC)" '[]' "$SCC_CPLX_INTENT"
+        else
+            CPLX_STATUS="pass"
+            [ "$MAXC" -ge 50 ] && CPLX_STATUS="warn"
+            printf "%-9s %-50s %s\n" "Score" "File" "Lines"
+            echo "----------------------------------------------------------------------------------------"
+            echo "$REPORTED" | jq -r 'sort_by(-.ccn) | .[0:20][] | [("scc-" + (.ccn | tostring)), ((.file | sub(".*/"; ""))[0:50]), (.lines | tostring)] | @tsv' \
+                | awk -F'\t' '{ printf "%-9s %-50s %s\n", $1, $2, $3 }'
+            echo ""
+            echo -e "${BLUE}📈 Summary:${NC} $TOTAL_COUNT file(s) over scc complexity 25 (heuristic; highest $MAXC)"
+            write_parsed "complexity" "$CPLX_STATUS" "$TOTAL_COUNT" \
+                "$TOTAL_COUNT file(s) over scc complexity 25 (heuristic ranking; highest $MAXC) — feeds git-hotspots" \
+                "$TOP_FINDINGS" "$SCC_CPLX_INTENT"
+        fi
+    fi
+else
+    echo -e "${YELLOW}⚠️  no complexity engine (need npx + ESLint for JS/TS, or scc)${NC}"
+    write_skipped "complexity" "no complexity engine available — need npx + ESLint (JS/TS) or scc (any language)" "$COMPLEXITY_INTENT"
 fi
 echo ""
 
@@ -1654,8 +1733,9 @@ echo ""
 # fail_means: Any file in that top-quintile pairing — surface as a
 #             warning. Informational signal; never gates the build,
 #             same model as the complexity check.
-# notes:      Depends on $OUT_DIR/complexity-full.csv (ESLint-derived,
-#             written by the complexity section above). Skipped if absent.
+# notes:      Depends on $OUT_DIR/complexity-full.csv (ESLint- or scc-derived,
+#             written by the complexity section above). Skipped if absent or
+#             if the target is not a git repo with history.
 print_section "Git Hotspots (Churn × Complexity)"
 echo "Command: git log (6-month churn) joined with $OUT_DIR/complexity-full.csv (max CCN/file)"
 echo ""
