@@ -1,5 +1,8 @@
 # 🩺 Application Checkup
 
+[![CI](https://github.com/maudlin/checkup/actions/workflows/ci.yml/badge.svg)](https://github.com/maudlin/checkup/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **A whole-repository examination of health, quality, security and hygiene** —
 code, dependencies, secrets & CVEs, containers, CI workflows, shell scripts,
 and git history. A single shell entrypoint runs ~20 checks (formatters,

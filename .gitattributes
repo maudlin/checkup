@@ -1,0 +1,10 @@
+# Normalise line endings. checkup is a Bash tool — scripts MUST stay LF or they
+# break when cloned on Windows (CRLF in a shebang/heredoc corrupts execution).
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+Dockerfile* text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
