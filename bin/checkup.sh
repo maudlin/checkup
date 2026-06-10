@@ -49,9 +49,19 @@ cd "$TARGET"
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
 read -r -a SRC_ROOTS <<< "${CHECKUP_SRC_ROOTS:-src server}"
 
+# Where checkup writes its own intermediates (raw captures, parsed JSON,
+# summary, by-file aggregate, complexity CSV, history). Defaults to the
+# scanned project's reports/ — set CHECKUP_OUT_DIR (ideally absolute) to write
+# everything OUTSIDE the source tree, so the source can be mounted read-only
+# (e.g. a Docker audit / due-diligence scan). The canonical "latest" report
+# follows: out-dir mode → $CHECKUP_OUT_DIR/checkup-report.md, otherwise the
+# committed docs/reports/checkup-report.md convention.
+OUT_DIR="${CHECKUP_OUT_DIR:-reports}"
+mkdir -p "$OUT_DIR"
+
 # Output directories for the run_tool / write_parsed helpers.
-export RAW_DIR="reports/raw"
-export PARSED_DIR="reports/parsed"
+export RAW_DIR="$OUT_DIR/raw"
+export PARSED_DIR="$OUT_DIR/parsed"
 
 # shellcheck source=../lib/run-tool.sh
 source "$CHECKUP_HOME/lib/run-tool.sh"
@@ -450,17 +460,25 @@ SEMGREP_INTENT=$(jq -n '{
 
 MAX_SCORE=$((MAX_SCORE + 10))
 run_tool "Security Analysis" npm run quality:security
-# semgrep writes its real output to reports/semgrep-report.json regardless of
-# $LAST_EXIT; the npm wrapper swallows the exit code. Validate the JSON before
-# parsing — a malformed/missing file is the only true failure mode here.
-if [ ! -f reports/semgrep-report.json ] || ! is_valid_json reports/semgrep-report.json; then
+# By convention the npm script writes reports/semgrep-report.json (semgrep's
+# native JSON) and swallows the exit code. If that wiring is absent — a non-Node
+# repo, or a container scan with no project deps — but semgrep is on PATH, fall
+# back to invoking it directly: semgrep is cross-stack, so this decouples the
+# check from the npm indirection. Validate the JSON before parsing; a
+# malformed/missing file is the only true failure mode here.
+SEMGREP_REPORT="reports/semgrep-report.json"
+if [ ! -f "$SEMGREP_REPORT" ] && command -v semgrep > /dev/null 2>&1; then
+    SEMGREP_REPORT="$OUT_DIR/semgrep-report.json"
+    semgrep scan --config auto --json --quiet . > "$SEMGREP_REPORT" 2>/dev/null || true
+fi
+if [ ! -f "$SEMGREP_REPORT" ] || ! is_valid_json "$SEMGREP_REPORT"; then
     echo -e "${RED}❌ Semgrep scan failed (0/10)${NC}"
-    echo "Run 'npm run quality:security' to see errors."
+    echo "Run 'npm run quality:security' (or install semgrep) to see errors."
     write_failed "semgrep" "semgrep produced no parseable report (exit $LAST_EXIT)" "$SEMGREP_INTENT"
 else
-    FINDINGS_COUNT=$(jq '.results | length' reports/semgrep-report.json)
-    ERROR_COUNT=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' reports/semgrep-report.json)
-    WARN_COUNT=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' reports/semgrep-report.json)
+    FINDINGS_COUNT=$(jq '.results | length' "$SEMGREP_REPORT")
+    ERROR_COUNT=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' "$SEMGREP_REPORT")
+    WARN_COUNT=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' "$SEMGREP_REPORT")
 
     # Top 10 findings as normalised {file, line, code, severity, message} —
     # severity-sorted (ERROR first), then by file. message truncated for terminal.
@@ -474,7 +492,7 @@ else
         }]
         | sort_by(({"error":0,"warning":1,"info":2}[.severity] // 3), .file)
         | .[0:10]
-    ' reports/semgrep-report.json)
+    ' "$SEMGREP_REPORT")
 
     if [ "$FINDINGS_COUNT" = "0" ]; then
         echo -e "${GREEN}✅ No security issues found (10/10)${NC}"
@@ -484,12 +502,12 @@ else
     elif [ "$ERROR_COUNT" = "0" ]; then
         echo -e "${YELLOW}⚠️  $FINDINGS_COUNT security warning(s) found (7/10)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 7))
-        echo "   Review reports/semgrep-report.json for details"
+        echo "   Review $SEMGREP_REPORT for details"
         SEMGREP_STATUS="warn"
         SEMGREP_SUMMARY="$FINDINGS_COUNT WARNING-severity findings"
     else
         echo -e "${RED}❌ $ERROR_COUNT security error(s) found (0/10)${NC}"
-        echo "   Review reports/semgrep-report.json and fix critical issues"
+        echo "   Review $SEMGREP_REPORT and fix critical issues"
         SEMGREP_STATUS="fail"
         SEMGREP_SUMMARY="$ERROR_COUNT ERROR-severity, $WARN_COUNT WARNING-severity"
     fi
@@ -1076,8 +1094,8 @@ else
         # the git-hotspots section will happily consume on a subsequent
         # clean run. The lizard implementation always overwrote via `cp`,
         # so this matches the prior contract.
-        mkdir -p reports
-        : > reports/complexity-full.csv
+        mkdir -p "$OUT_DIR"
+        : > "$OUT_DIR/complexity-full.csv"
 
         if [ "$TOTAL_COUNT" -eq 0 ]; then
             echo -e "${GREEN}✅ No functions over CCN 10 / cognitive 15${NC}"
@@ -1118,7 +1136,7 @@ else
                  ((.message | split(" — ")[0])),
                  "",
                  .line, .line] | @csv
-            ' > reports/complexity-full.csv
+            ' > "$OUT_DIR/complexity-full.csv"
 
             write_parsed "complexity" "$STATUS" "$TOTAL_COUNT" \
                 "$TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 reported, highest score $HIGHEST_CCN)" \
@@ -1479,61 +1497,63 @@ echo ""
 # fail_means: Any finding — investigate. Complementary to a secret manager,
 #             which prevents secrets reaching dev envs in the first place.
 print_section "Secret Scanning"
-echo "Command: gitleaks dir --config .gitleaks.toml ."
+echo "Command: gitleaks dir [--config .gitleaks.toml] ."
 echo ""
 
 GITLEAKS_INTENT=$(jq -n '{
-    purpose:    "Scan the working tree for secrets the staged-only secretlint pre-commit hook would have missed.",
-    pass_means: "Zero findings against the working tree under the project gitleaks config.",
-    fail_means: "Any finding is a real signal — investigate before merging. The .gitleaks.toml allowlist is tuned so any new match warrants attention."
+    purpose:    "Scan the working tree for committed/checked-out secrets.",
+    pass_means: "Zero findings (project .gitleaks.toml allowlist if present, else gitleaks defaults).",
+    fail_means: "Any finding is a real signal — investigate. Without a project allowlist, expect some false positives to triage."
 }')
 
 MAX_SCORE=$((MAX_SCORE + 5))
 
-if [ ! -f .gitleaks.toml ]; then
-    write_skipped "gitleaks" ".gitleaks.toml config not present at repo root" "$GITLEAKS_INTENT"
+# Use the project's allowlist if it has one; otherwise fall back to gitleaks'
+# built-in default rules so the scan still runs on any repo (e.g. auditing a
+# project that never configured gitleaks). Decouples the check from a
+# repo-supplied config — same spirit as the semgrep fallback.
+# gitleaks writes its JSON to --report-path. Use a real file under $OUT_DIR
+# rather than /dev/stdout: piping the report to stdout is unreliable across
+# gitleaks 8.x under redirection (it can emit nothing), whereas a file is
+# deterministic and stays outside a read-only source mount.
+GITLEAKS_REPORT="$OUT_DIR/gitleaks-report.json"
+GITLEAKS_ARGS=(dir --no-banner --redact --report-format=json --report-path="$GITLEAKS_REPORT")
+[ -f .gitleaks.toml ] && GITLEAKS_ARGS+=(--config .gitleaks.toml)
+run_tool "Secret Scanning" gitleaks "${GITLEAKS_ARGS[@]}" .
+
+if [ "$LAST_EXIT" = "127" ]; then
+    write_skipped "gitleaks" "gitleaks not installed (brew install gitleaks / static binary from GitHub releases)" "$GITLEAKS_INTENT"
+elif ! is_valid_json "$GITLEAKS_REPORT"; then
+    write_failed "gitleaks" "gitleaks produced no parseable report (exit $LAST_EXIT)" "$GITLEAKS_INTENT"
 else
-    run_tool "Secret Scanning" gitleaks dir \
-        --no-banner --redact \
-        --config .gitleaks.toml \
-        --report-format=json \
-        --report-path=/dev/stdout \
-        .
+    GITLEAKS_TOTAL=$(jq 'length' "$GITLEAKS_REPORT")
 
-    if [ "$LAST_EXIT" = "127" ]; then
-        write_skipped "gitleaks" "gitleaks not installed (brew install gitleaks / static binary from GitHub releases)" "$GITLEAKS_INTENT"
-    elif ! is_valid_json "$LAST_RAW"; then
-        write_failed "gitleaks" "gitleaks produced unparseable output (exit $LAST_EXIT)" "$GITLEAKS_INTENT"
+    GITLEAKS_TOP=$(jq -c '
+        sort_by(.File, .StartLine)
+        | .[0:10]
+        | map({
+            file: .File,
+            line: .StartLine,
+            code: .RuleID,
+            severity: "critical",
+            message: ((.Description // "") | gsub("\\s+"; " ") | .[0:200])
+        })
+    ' "$GITLEAKS_REPORT")
+
+    if [ "$GITLEAKS_TOTAL" = "0" ]; then
+        echo -e "${GREEN}✅ No secrets detected (5/5)${NC}"
+        HEALTH_SCORE=$((HEALTH_SCORE + 5))
+        GITLEAKS_STATUS="pass"
+        GITLEAKS_SUMMARY="No secrets detected in working tree"
     else
-        GITLEAKS_TOTAL=$(jq 'length' "$LAST_RAW")
-
-        GITLEAKS_TOP=$(jq -c '
-            sort_by(.File, .StartLine)
-            | .[0:10]
-            | map({
-                file: .File,
-                line: .StartLine,
-                code: .RuleID,
-                severity: "critical",
-                message: ((.Description // "") | gsub("\\s+"; " ") | .[0:200])
-            })
-        ' "$LAST_RAW")
-
-        if [ "$GITLEAKS_TOTAL" = "0" ]; then
-            echo -e "${GREEN}✅ No secrets detected (5/5)${NC}"
-            HEALTH_SCORE=$((HEALTH_SCORE + 5))
-            GITLEAKS_STATUS="pass"
-            GITLEAKS_SUMMARY="No secrets detected in working tree"
-        else
-            echo -e "${RED}❌ $GITLEAKS_TOTAL secret finding(s) (0/5)${NC}"
-            echo "   Review reports/raw/secret-scanning.txt for redacted details."
-            GITLEAKS_STATUS="fail"
-            GITLEAKS_SUMMARY="$GITLEAKS_TOTAL finding(s) — every match is gated"
-        fi
-
-        write_parsed "gitleaks" "$GITLEAKS_STATUS" "$GITLEAKS_TOTAL" \
-            "$GITLEAKS_SUMMARY" "$GITLEAKS_TOP" "$GITLEAKS_INTENT"
+        echo -e "${RED}❌ $GITLEAKS_TOTAL secret finding(s) (0/5)${NC}"
+        echo "   Review $GITLEAKS_REPORT for redacted details."
+        GITLEAKS_STATUS="fail"
+        GITLEAKS_SUMMARY="$GITLEAKS_TOTAL finding(s)"
     fi
+
+    write_parsed "gitleaks" "$GITLEAKS_STATUS" "$GITLEAKS_TOTAL" \
+        "$GITLEAKS_SUMMARY" "$GITLEAKS_TOP" "$GITLEAKS_INTENT"
 fi
 echo ""
 
@@ -1549,10 +1569,10 @@ echo ""
 # fail_means: Any file in that top-quintile pairing — surface as a
 #             warning. Informational signal; never gates the build,
 #             same model as the complexity check.
-# notes:      Depends on reports/complexity-full.csv (ESLint-derived,
+# notes:      Depends on $OUT_DIR/complexity-full.csv (ESLint-derived,
 #             written by the complexity section above). Skipped if absent.
 print_section "Git Hotspots (Churn × Complexity)"
-echo "Command: git log (6-month churn) joined with reports/complexity-full.csv (max CCN/file)"
+echo "Command: git log (6-month churn) joined with $OUT_DIR/complexity-full.csv (max CCN/file)"
 echo ""
 
 HOTSPOTS_INTENT=$(jq -n '{
@@ -1565,10 +1585,10 @@ HOTSPOTS_INTENT=$(jq -n '{
 # check (section 13): we want the signal in the report without conflating
 # it with the deployability gate.
 
-if [ ! -s reports/complexity-full.csv ]; then
-    echo -e "${YELLOW}⚠️  reports/complexity-full.csv missing — run the complexity section first${NC}"
+if [ ! -s "$OUT_DIR/complexity-full.csv" ]; then
+    echo -e "${YELLOW}⚠️  $OUT_DIR/complexity-full.csv missing — run the complexity section first${NC}"
     write_skipped "git-hotspots" \
-        "reports/complexity-full.csv not present — depends on the complexity section" \
+        "$OUT_DIR/complexity-full.csv not present — depends on the complexity section" \
         "$HOTSPOTS_INTENT"
 elif ! command -v git > /dev/null 2>&1; then
     write_skipped "git-hotspots" "git not on PATH — cannot compute churn" "$HOTSPOTS_INTENT"
@@ -1596,7 +1616,7 @@ else
         gsub(/"/, "", f)
         if ($2+0 > max[f]) max[f] = $2+0
     }
-    END { for (f in max) printf "%s\t%d\n", f, max[f] }' reports/complexity-full.csv)
+    END { for (f in max) printf "%s\t%d\n", f, max[f] }' "$OUT_DIR/complexity-full.csv")
 
     # Inner join on file, requiring positive churn. A file untouched in
     # the last 6 months cannot be a hotspot regardless of CCN. Including
@@ -2167,8 +2187,8 @@ echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)"
 echo ""
 
 # Save summary for health report generation
-mkdir -p reports
-cat > reports/checkup-summary.json << SUMMARY
+mkdir -p "$OUT_DIR"
+cat > "$OUT_DIR/checkup-summary.json" << SUMMARY
 {
   "timestamp": "$(date -u +"%Y-%m-%d %H:%M:%S UTC")",
   "score": $HEALTH_SCORE,
@@ -2203,7 +2223,11 @@ fi
 echo ""
 echo "📄 Generating report..."
 if "$SCRIPT_DIR/checkup-report.sh" > /dev/null 2>&1; then
-    echo "✅ Report saved to docs/reports/checkup-report.md"
+    if [ -n "${CHECKUP_OUT_DIR:-}" ]; then
+        echo "✅ Report saved to $OUT_DIR/checkup-report.md"
+    else
+        echo "✅ Report saved to docs/reports/checkup-report.md"
+    fi
 else
     echo "⚠️  Could not generate report"
 fi

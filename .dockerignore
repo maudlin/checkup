@@ -1,0 +1,6 @@
+# Keep the build context small — only bin/, lib/ and docker/ are COPY'd.
+.git
+reports
+docs/reports
+checkup-out
+test

@@ -18,11 +18,21 @@ set -e
 REPO_ROOT="${CHECKUP_TARGET:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$REPO_ROOT"
 
-PARSED_DIR="reports/parsed"
-REPORT_FILE="docs/reports/checkup-report.md"
+# Where checkup.sh wrote its intermediates (must match). Defaults to the
+# scanned project's reports/; CHECKUP_OUT_DIR redirects everything outside the
+# source tree (read-only / container scans). In out-dir mode the canonical
+# "latest" report lands in the out dir too; otherwise it keeps the committed
+# docs/reports/checkup-report.md convention.
+OUT_DIR="${CHECKUP_OUT_DIR:-reports}"
+PARSED_DIR="$OUT_DIR/parsed"
+if [ -n "${CHECKUP_OUT_DIR:-}" ]; then
+    REPORT_FILE="$OUT_DIR/checkup-report.md"
+else
+    REPORT_FILE="docs/reports/checkup-report.md"
+fi
 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 TS_FILENAME=$(date -u +"%Y%m%dT%H%M%SZ")
-HISTORY_FILE="reports/checkup-report-${TS_FILENAME}.md"
+HISTORY_FILE="$OUT_DIR/checkup-report-${TS_FILENAME}.md"
 
 # Normalised path roots — strip trailing slash so the renderer's startswith
 # comparisons are well-defined regardless of how $HOME was set.
@@ -44,10 +54,10 @@ if [ ! -d "$PARSED_DIR" ] || [ "${#PARSED_FILES[@]}" -eq 0 ]; then
 fi
 
 # Read the trend score (still produced by checkup.sh end-of-run).
-if [ -f "reports/checkup-summary.json" ]; then
-    HEALTH_SCORE=$(jq -r '.score // "N/A"' reports/checkup-summary.json)
-    MAX_SCORE=$(jq -r '.maxScore // 0' reports/checkup-summary.json)
-    HEALTH_PERCENTAGE=$(jq -r '.percentage // "N/A"' reports/checkup-summary.json)
+if [ -f "$OUT_DIR/checkup-summary.json" ]; then
+    HEALTH_SCORE=$(jq -r '.score // "N/A"' "$OUT_DIR/checkup-summary.json")
+    MAX_SCORE=$(jq -r '.maxScore // 0' "$OUT_DIR/checkup-summary.json")
+    HEALTH_PERCENTAGE=$(jq -r '.percentage // "N/A"' "$OUT_DIR/checkup-summary.json")
 else
     HEALTH_SCORE="N/A"
     MAX_SCORE=0
@@ -178,7 +188,7 @@ BY_FILE=$(jq -s \
 ' "${PARSED_FILES[@]}")
 
 # Persist the full ranking for LLM/trend consumers
-echo "$BY_FILE" > reports/by-file.json
+echo "$BY_FILE" > "$OUT_DIR/by-file.json"
 
 # Top 10 rendered as a markdown table
 BY_FILE_MD=$(echo "$BY_FILE" | jq -r '
@@ -306,7 +316,7 @@ check requires no changes to this file — see \`README.md\` for the contract._
 EOF
 }
 
-mkdir -p docs/reports reports
+mkdir -p "$(dirname "$REPORT_FILE")" "$OUT_DIR"
 render_report > "$REPORT_FILE"
 render_report > "$HISTORY_FILE"
 

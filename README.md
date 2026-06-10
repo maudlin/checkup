@@ -41,6 +41,38 @@ per check). Add an alias (`alias checkup=/path/to/checkup/bin/checkup.sh`) or
 symlink `bin/checkup.sh` onto your `PATH`. To pin it into a project, vendor the
 repo (e.g. as a git submodule) and call `bin/checkup.sh` from an npm/make task.
 
+### Run in Docker (no host installs)
+
+The `checkup-core` image bakes the cross-stack tools (gitleaks, semgrep,
+shellcheck, yamllint, hadolint, scc) so you can examine **any** repository with
+nothing installed but Docker — ideal for ad-hoc audits and due diligence:
+
+```bash
+docker build -t checkup-core .          # one-off, from this repo
+
+# Scan a project: source mounted READ-ONLY, report written to ./checkup-out
+docker run --rm \
+  -v "/path/to/project:/src:ro" \
+  -v "$PWD/checkup-out:/out" \
+  checkup-core
+# → ./checkup-out/checkup-report.md  (+ parsed/*.json, by-file.json)
+```
+
+The source is mounted read-only — checkup writes nothing into it; everything
+goes to `/out`. Mount a full clone (not a shallow/exported tree) so the
+git-forensics checks have history.
+
+What runs in `checkup-core`: the cross-stack security, hygiene and forensics
+checks (secrets, SAST, shell/YAML/Dockerfile lint, stats, churn × complexity).
+Language- and build-specific checks (typecheck, test, build, coverage) belong
+to per-stack images — see [`ROADMAP.md`](ROADMAP.md). On a non-Node repo these
+currently report `fail` rather than `skip` (a known gap — they'll be gated by
+per-stack profiles); read the cross-stack sections for the core signal.
+
+The report location is controlled by **`CHECKUP_OUT_DIR`** (set to `/out` in
+the image): set it in any context to write outputs outside the scanned tree.
+Unset, checkup keeps the committed `docs/reports/checkup-report.md` convention.
+
 ---
 
 ## Entrypoints
