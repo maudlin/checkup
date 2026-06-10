@@ -1,0 +1,114 @@
+# Classic ASP / VBScript security rules for semgrep (generic mode).
+#
+# Classic ASP has no AST parser in semgrep, so these are high-signal regex rules
+# (languages: [generic]) scoped to the legacy file types. They target the
+# vulnerability classes that dominate late-90s/2000s ASP: SQL injection by string
+# concatenation, reflected XSS, dynamic code/object execution of user input,
+# path traversal, and hardcoded credentials. False positives are expected — this
+# is a triage aid for a brownfield audit, not a gate.
+#
+# Run:  semgrep scan --config asp-classic-security.yml --severity ERROR <path>
+
+rules:
+  - id: classic-asp-sqli-request-concat
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Possible SQL injection: a SQL statement is built by concatenating
+      user-controlled Request input ("..." & Request...). Use parameterised
+      queries via ADODB.Command with .Parameters.Append instead of string
+      concatenation.
+    patterns:
+      - pattern-regex: '(?i)\b(select|insert\s+into|update|delete\s+from|exec(ute)?)\b[^\n"]*"\s*&\s*Request\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx", "*.asmx"]
+
+  - id: classic-asp-sqli-execute-request
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Possible SQL injection: a recordset/connection is opened or executed with a
+      string containing user-controlled Request input. Parameterise the query.
+    patterns:
+      - pattern-regex: '(?i)\.(Execute|Open)\s*\(?[^\n)]*&\s*Request\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx", "*.asmx"]
+
+  - id: classic-asp-reflected-xss-response-write
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Possible reflected XSS: user-controlled Request input is written to the
+      response without encoding. Encode with Server.HTMLEncode() before output.
+    patterns:
+      - pattern-regex: '(?i)Response\.Write\s*\(?[^\n)]*\bRequest\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx", "*.asmx"]
+
+  - id: classic-asp-reflected-xss-inline-output
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Possible reflected XSS: Request input echoed via inline <%= ... %> without
+      encoding. Wrap in Server.HTMLEncode().
+    patterns:
+      - pattern-regex: '(?i)<%\s*=\s*[^%]*\bRequest\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx"]
+
+  - id: classic-asp-dynamic-code-execution
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Dangerous dynamic code execution of user input (Eval/Execute/ExecuteGlobal
+      on Request data) — arbitrary VBScript execution. Remove; never eval input.
+    patterns:
+      # Prefix `(^|[^.\w])` excludes ADODB `.Execute` (SQL, caught by the sqli
+      # rules) so this fires only on bare VBScript Eval/Execute. re2 has no
+      # lookbehind, hence the explicit non-dot, non-word boundary.
+      - pattern-regex: '(?i)(^|[^.\w])(Eval|Execute|ExecuteGlobal)\s*\(?[^\n)]*\bRequest\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx"]
+
+  - id: classic-asp-path-traversal-mappath
+    languages: [generic]
+    severity: WARNING
+    message: >
+      Possible path traversal: Server.MapPath / file access uses user-controlled
+      Request input. Validate against an allowlist; reject ".." and absolute paths.
+    patterns:
+      - pattern-regex: '(?i)(Server\.MapPath|OpenTextFile|GetFile|FileExists)\s*\(?[^\n)]*\bRequest\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx", "*.asmx"]
+
+  - id: classic-asp-createobject-from-request
+    languages: [generic]
+    severity: WARNING
+    message: >
+      Server.CreateObject with a user-controlled progid lets an attacker
+      instantiate arbitrary COM objects. Use a fixed, hardcoded progid.
+    patterns:
+      - pattern-regex: '(?i)Server\.CreateObject\s*\(?[^\n)]*\bRequest\b'
+    paths:
+      include: ["*.asp", "*.asa", "*.inc", "*.aspx", "*.ascx", "*.asmx"]
+
+  - id: classic-asp-hardcoded-connection-credentials
+    languages: [generic]
+    severity: WARNING
+    message: >
+      Hardcoded database credentials / connection string. Move to a protected
+      config outside the web root and restrict access; rotate any exposed secret.
+    patterns:
+      - pattern-regex: '(?i)(Password|Pwd)\s*=\s*[^;"\s]{3,}'
+    paths:
+      include:
+        [
+          "*.asp",
+          "*.asa",
+          "*.inc",
+          "*.aspx",
+          "*.ascx",
+          "*.asmx",
+          "*.config",
+          "*.vbs",
+        ]

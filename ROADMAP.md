@@ -183,6 +183,44 @@ chasing every esoteric build system.
   `docker run --user "$(id -u):$(id -g)" …` so `/out` stays writable and
   outputs are owned by the host user.
 
+## Field notes: auditing a legacy non-git ASP/.NET app
+
+First real run against something unlike the repo Checkup grew up in — a ~89K-LOC
+hybrid **Classic ASP (262 files) + C# ASP.NET** site, **not under git**, on a
+Windows filesystem via WSL. What it taught us:
+
+- **Fixed — non-git repos produced false-PASS forensics.** `branch-hygiene`,
+  `bug-fix-density`, `change-coupling` reported reassuring "no issues" on a tree
+  with no history (same false-pass class as the toolchain-absent bug). Added a
+  one-time `GIT_OK` probe (`is-inside-work-tree` + `HEAD` exists); the four
+  git-axis checks now `skip` honestly when there's no history.
+- **Fixed — `codebase-stats` was hardcoded to TypeScript/Svelte.** On an ASP/C#
+  repo it read "TypeScript: 0, Svelte: 0". Now derives the top languages from
+  `scc --format json` (e.g. "top: ASP 25899, C# 20965, XSLT 3975") — meaningful
+  on any stack.
+- **semgrep `--config auto` already earns its keep on C#.** 53 findings
+  (real SQLi + SSRF) in the `.aspx.cs` with zero .NET-specific setup — the
+  cross-stack SAST value prop holds. The focused `p/csharp` pack was _narrower_
+  (8 high-confidence SQLi), so `auto` is the workhorse; packs add precision.
+- **Classic ASP was the blind spot — and the biggest win.** `auto` found ~nothing
+  in 26K LOC of `.asp` (no AST parser). A generic-mode regex ruleset
+  (`examples/semgrep-asp-classic.yml`) found **101 real issues** (SQLi, reflected
+  XSS, dynamic exec, hardcoded creds). Generic mode can't see VBScript comments
+  (commented code flags) and needed one refinement (exclude ADODB `.Execute`
+  from the VBScript-`Execute` rule via a non-dot prefix — re2 has no lookbehind).
+  This is the agent-tailoring seam working exactly as designed.
+- **Still owed (Phase 3 `checkup-dotnet`):** the real .NET depth needs the SDK —
+  `dotnet build`/`test`, **Security Code Scan**, `dotnet list package
+--vulnerable` (the npm-audit equivalent), devskim. None fit in node-less core.
+- **Complexity/hotspots are needlessly node-locked.** `scc` already computes
+  per-language complexity (it ran here: ASP 3912, C# 2092) but the `complexity`
+  and `git-hotspots` checks are eslint-driven, so both skip on non-JS repos. A
+  language-agnostic complexity source (scc's own numbers, or `lizard`) would
+  unlock hotspots for ASP/C#/Go/Python — high-value, stack-independent.
+- **WSL/`/mnt` works but is slow.** drvfs (9p) makes full-tree walks sluggish;
+  for a real audit, `git clone`/copy into the Linux fs first. Worked fine here
+  (4MB), would bite on a large monorepo.
+
 ## Non-goals (for now)
 
 - Running an arbitrary stranger's full **build** in the image. That needs the

@@ -44,6 +44,19 @@ CHECKUP_HOME="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET="${CHECKUP_TARGET:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$TARGET"
 
+# Is the target a git repository with at least one commit? The git-forensics
+# checks (hotspots, change-coupling, bug-fix-density, branch-hygiene) need
+# history; on a non-git tree (a vendored snapshot, an unpacked release, a legacy
+# app never put under git) they would otherwise report reassuring "no issues
+# found" PASSES that really mean "no history to look at". Gate them on this so
+# they skip honestly. (Surfaced auditing a non-git ASP/.NET codebase.)
+GIT_OK=false
+if command -v git > /dev/null 2>&1 \
+    && git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+    && git rev-parse HEAD > /dev/null 2>&1; then
+    GIT_OK=true
+fi
+
 # Source roots for the git-axis checks (hotspots, change-coupling,
 # bug-fix-density) and the complexity scan. Space-separated; override via
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
@@ -1037,16 +1050,23 @@ else
         # produce invalid JSON when interpolated as numbers below.
         TOTAL_CODE=$(grep "^Total" "$LAST_RAW" | awk '{print $6}' | tr -d ',')
         TOTAL_FILES=$(grep "^Total" "$LAST_RAW" | awk '{print $2}' | tr -d ',')
-        TS_CODE=$(grep "^TypeScript " "$LAST_RAW" | head -1 | awk '{print $6}' | tr -d ',')
-        SVELTE_CODE=$(grep "^Svelte" "$LAST_RAW" | awk '{print $6}' | tr -d ',')
         COMPLEXITY=$(grep "^Total" "$LAST_RAW" | awk '{print $7}' | tr -d ',')
 
+        # Top languages by code, derived from scc's JSON rather than hardcoded to
+        # TypeScript/Svelte — so the breakdown is meaningful on ANY stack (a
+        # legacy ASP/C# audit, a Go service, etc.). The text table above is for
+        # the console; JSON is robust to language names with spaces / truncation.
+        SCC_TOP_LANGS=$("$SCC_CMD" --format json \
+            --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null \
+            | jq -r 'sort_by(-.Code) | .[0:3] | map("\(.Name) \(.Code)") | join(", ")' 2>/dev/null)
+        [ -z "$SCC_TOP_LANGS" ] && SCC_TOP_LANGS="n/a"
+
         echo -e "${BLUE}📈 Summary:${NC} ${TOTAL_CODE:-0} lines of code across ${TOTAL_FILES:-0} files"
-        echo -e "   TypeScript: ${TS_CODE:-0} | Svelte: ${SVELTE_CODE:-0} | Complexity: ${COMPLEXITY:-0}"
+        echo -e "   Top: ${SCC_TOP_LANGS} | Complexity: ${COMPLEXITY:-0}"
 
         # Standardised parsed JSON for the tool-agnostic markdown writer.
         write_parsed "codebase-stats" "pass" "${TOTAL_FILES:-0}" \
-            "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files (TypeScript: ${TS_CODE:-0}, Svelte: ${SVELTE_CODE:-0})" \
+            "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files (top: ${SCC_TOP_LANGS})" \
             '[]' \
             "$SCC_INTENT"
     fi
@@ -1655,8 +1675,8 @@ if [ ! -s "$OUT_DIR/complexity-full.csv" ]; then
     write_skipped "git-hotspots" \
         "$OUT_DIR/complexity-full.csv not present — depends on the complexity section" \
         "$HOTSPOTS_INTENT"
-elif ! command -v git > /dev/null 2>&1; then
-    write_skipped "git-hotspots" "git not on PATH — cannot compute churn" "$HOTSPOTS_INTENT"
+elif [ "$GIT_OK" != true ]; then
+    write_skipped "git-hotspots" "not a git repository with history (or git absent) — cannot compute churn" "$HOTSPOTS_INTENT"
 else
     # Churn: count of commits touching each file in the last 6 months,
     # scoped to the same source roots ESLint covered (src/, server/).
@@ -1848,8 +1868,8 @@ COUPLING_INTENT=$(jq -n '{
     fail_means: "Pairs ≥ 80% co-change — likely candidates for a shared interface, extracted component, or merged module."
 }')
 
-if ! command -v git > /dev/null 2>&1; then
-    write_skipped "change-coupling" "git not on PATH" "$COUPLING_INTENT"
+if [ "$GIT_OK" != true ]; then
+    write_skipped "change-coupling" "not a git repository with history (or git absent) — git-forensics needs commits" "$COUPLING_INTENT"
 else
     # Per-file change count over the same 6-month window — denominator
     # for the co-change ratio.
@@ -2018,8 +2038,8 @@ BUGFIX_INTENT=$(jq -n '{
     fail_means: "Files ≥ 50% fix-touch ratio — fragile contracts, missing tests, or unstable integration. Refactor/test target."
 }')
 
-if ! command -v git > /dev/null 2>&1; then
-    write_skipped "bug-fix-density" "git not on PATH" "$BUGFIX_INTENT"
+if [ "$GIT_OK" != true ]; then
+    write_skipped "bug-fix-density" "not a git repository with history (or git absent) — git-forensics needs commits" "$BUGFIX_INTENT"
 else
     # Fix touches: commits matching the conventional-commit fix prefix
     # OR an explicit revert. --grep treats each pattern as OR'd.
@@ -2148,8 +2168,8 @@ BRANCH_INTENT=$(jq -n '{
     fail_means: "Branches idle ≥ 90 days — review for delete or revival. Lower-tier (30-89 days) is opportunistic cleanup."
 }')
 
-if ! command -v git > /dev/null 2>&1; then
-    write_skipped "branch-hygiene" "git not on PATH" "$BRANCH_INTENT"
+if [ "$GIT_OK" != true ]; then
+    write_skipped "branch-hygiene" "not a git repository with history (or git absent) — git-forensics needs commits" "$BRANCH_INTENT"
 else
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     NOW_TS=$(date +%s)
