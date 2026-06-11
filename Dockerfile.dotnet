@@ -14,14 +14,22 @@
 #     Classic ASP source that build-time Roslyn analysers can't reach on Linux
 # and runs the checkup-dotnet overlay orchestrator instead of plain core.
 #
-# Large by design (the .NET SDK is ~700MB). Pin DOTNET/DevSkim for reproducible
-# due-diligence reports — see ROADMAP.
+# Large by design (the .NET SDK is ~700MB). Tool downloads are checksum-verified
+# and version-pinned for reproducible due-diligence reports — see ROADMAP.
 
 FROM checkup-core
 
-ARG DOTNET_CHANNEL=8.0
+ARG DOTNET_VERSION=8.0.422
 ARG DEVSKIM_VERSION=1.0.70
 ARG PMD_VERSION=7.25.0
+# Download integrity (verified before use). PMD publishes only a GPG .asc, so its
+# hash is pinned-on-known-good. dotnet-install.sh is a rolling script with no
+# versioned URL: pinning its hash makes a Microsoft update fail the build on
+# purpose — refresh it deliberately on a bump (the script itself then verifies
+# the SDK package's own checksum). DevSkim is version-pinned via NuGet (which
+# carries its own package integrity).
+ARG PMD_SHA256=1fceb3005ebfd580cc9afa5242e07df74826eedeb225f239f503083845d77fc2
+ARG DOTNET_INSTALL_SHA256=082f7685e156738a1b2e2ed8381a621870d4ce8e8c59278034556f05c186eb2e
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
@@ -44,16 +52,19 @@ RUN apt-get update \
 # gap). Static Java app — pinned for reproducible reports.
 RUN curl -fsSL -o /tmp/pmd.zip \
         "https://github.com/pmd/pmd/releases/download/pmd_releases%2F${PMD_VERSION}/pmd-dist-${PMD_VERSION}-bin.zip" \
+    && echo "${PMD_SHA256}  /tmp/pmd.zip" | sha256sum -c - \
     && unzip -q /tmp/pmd.zip -d /opt \
     && rm /tmp/pmd.zip \
     && ln -s "/opt/pmd-bin-${PMD_VERSION}/bin/pmd" /usr/local/bin/pmd \
     && pmd --version
 
-# .NET SDK via Microsoft's official install script (channel-pinned; avoids the
-# distro feed drift). Installs to /usr/share/dotnet (on PATH above).
+# .NET SDK via Microsoft's official install script. The script is checksum-
+# verified (above); it then downloads the exact, version-pinned SDK and verifies
+# the SDK package's own checksum. Installs to /usr/share/dotnet (on PATH above).
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+    && echo "${DOTNET_INSTALL_SHA256}  /tmp/dotnet-install.sh" | sha256sum -c - \
     && chmod +x /tmp/dotnet-install.sh \
-    && /tmp/dotnet-install.sh --channel "${DOTNET_CHANNEL}" --install-dir /usr/share/dotnet \
+    && /tmp/dotnet-install.sh --version "${DOTNET_VERSION}" --install-dir /usr/share/dotnet \
     && rm /tmp/dotnet-install.sh \
     && dotnet --version
 

@@ -120,10 +120,19 @@ chasing every esoteric build system.
 
 ## Phase-1 follow-ups / known gaps
 
-- **Pin & verify the baked tools.** semgrep is currently unpinned (builds
-  against latest); pin it for reproducible DD reports. Add SHA256 checksum
-  verification for the downloaded static binaries (shellcheck / hadolint /
-  gitleaks / scc).
+- **Fixed — pin & verify the baked tools.** Every binary download is now
+  SHA256-verified before use (`sha256sum -c`), so a re-tagged or tampered
+  upstream artifact fails the build: shellcheck / hadolint / gitleaks / scc in
+  core, PMD + dotnet-install.sh in the overlay. hadolint / gitleaks / scc match
+  the projects' own published checksums; shellcheck and PMD publish none (PMD has
+  a GPG `.asc` only), so those are pinned-on-known-good. semgrep is pinned to an
+  exact version (was unpinned), yamllint already was, the .NET SDK is pinned to
+  an exact version (was a floating channel), and DevSkim is NuGet-version-pinned.
+  Residual hardening: pip deps are version-pinned but not hash-pinned (full
+  `pip --require-hashes` would need every transitive dep hashed); PMD/shellcheck
+  could be GPG-verified rather than pinned-on-known-good; and `dotnet-install.sh`
+  is a rolling script (no versioned URL) so its pinned hash needs a deliberate
+  refresh on a bump (the script then verifies the SDK package's own checksum).
 - **Multi-arch.** v1 targets `linux/amd64`. The binary URLs are arch-specific;
   key them off `TARGETARCH` and publish an arm64 variant.
 - **Offline semgrep.** `--config auto` fetches rules from the registry. For
