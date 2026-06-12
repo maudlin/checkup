@@ -19,3 +19,4 @@ Format: **Context · Decision · Consequences · Status**.
 | 0005 | [checkup is a template, not a product](0005-template-not-product.md) | Accepted |
 | 0006 | [Restricted contribution model](0006-restricted-contribution-model.md) | Accepted |
 | 0007 | [Human-gated merges (agents never self-merge)](0007-human-gated-merges.md) | Accepted |
+| 0008 | [Network isolation as the primary exfiltration control](0008-network-isolation.md) | Accepted |
