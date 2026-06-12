@@ -222,7 +222,7 @@ finding shape and the rest of the substrate carries it through unchanged.
 
 | Variable              | Used by                                   | Default                                  | Purpose                                                                                   |
 | --------------------- | ----------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `CHECKUP_TARGET`      | path resolution (`checkup.sh` + renderer) | enclosing git repo, else `$PWD`          | Explicit project root to scan, instead of auto-detecting from the git top level.          |
+| `CHECKUP_TARGET`      | path resolution (`checkup.sh` + renderer) | enclosing git repo, else `$PWD`          | Explicit project root to scan, instead of auto-detecting from the git top level. For one service in a monorepo, see [Scanning a monorepo subdirectory](#scanning-a-monorepo-subdirectory). |
 | `CHECKUP_SRC_ROOTS`   | complexity + git-axis sections            | `src server`                             | Space-separated source roots for the git-forensics and complexity scans (e.g. `app cmd`). |
 | `CHECKUP_SHELL_DIRS`  | `shellcheck` section                      | `scripts .husky .githooks .claude/hooks` | Space-separated dirs to search for shell scripts. Missing dirs are skipped silently.      |
 | `HADOLINT_DOCKERFILE` | `hadolint` section                        | auto-detect `Dockerfile*` at root        | Override the Dockerfile filename when it is named non-conventionally.                     |
@@ -232,6 +232,30 @@ finding shape and the rest of the substrate carries it through unchanged.
 
 Forks adding new env-overridable knobs should follow the same `<TOOL>_<NOUN>`
 naming convention and document them here in one table.
+
+### Scanning a monorepo subdirectory
+
+Point `CHECKUP_TARGET` at one service inside a larger repo and scope the source
+roots to it:
+
+```bash
+CHECKUP_TARGET=/path/to/monorepo/services/api \
+CHECKUP_SRC_ROOTS="src" \
+CHECKUP_OUT_DIR=/tmp/checkup-out \
+bin/checkup.sh
+```
+
+Caveats:
+
+- **Churn / coupling / bug-fix density scope correctly** — git pathspecs are
+  cwd-relative, so the git-forensics scans see only the subtree.
+- **Paths are target-relative** — the file-based scanners and git-forensics share
+  one namespace (e.g. `src/app.ts`, not `services/api/src/app.ts`), so the
+  by-file hotspot aggregate joins correctly.
+- **branch-hygiene is repo-wide** — branches can't be scoped to a subtree, so its
+  counts cover the whole monorepo, not just the service.
+- **One stack per run** — a monorepo mixing stacks wants one run per service with
+  the matching overlay; there's no built-in cross-service roll-up.
 
 ---
 
