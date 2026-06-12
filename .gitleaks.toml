@@ -1,0 +1,18 @@
+# checkup's own gitleaks config — used when the gitleaks check scans this repo,
+# and by the CI secret self-scan. Extends the default ruleset, and allowlists the
+# things that look secret-shaped but aren't: pinned tool checksums (64-char hex)
+# and the generic example linter configs.
+title = "checkup"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "pinned tool checksums and example configs are not secrets"
+regexes = [
+  # SHA256 pins in the Dockerfiles (e.g. *_SHA256=<64 hex>)
+  '''[a-f0-9]{64}''',
+]
+paths = [
+  '''examples/.*''',
+]

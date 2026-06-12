@@ -85,3 +85,22 @@ All checkup-owned output goes under `reports/` by default, or under
 `$CHECKUP_OUT_DIR` when set (so the source can be mounted read-only). The
 canonical report is `checkup-report.md`; machine-readable data is
 `parsed/*.json` + `by-file.json`.
+
+## Design rationale
+
+**Why the dual stream (markdown + parsed JSON)?** Humans want narrative and
+trend; LLMs and CI want structured findings. One dataset, two renderings.
+
+**Why does each check write its own JSON?** The alternative — one giant summary
+file every parser mutates — is the shape the original script had, and the reason
+adding a check meant editing six places. One file per check makes each
+independently testable, and the renderer just iterates `parsed/*.json`.
+
+**Why is status separate from the cumulative score?** The score (sum of per-check
+allocations) is for _trend_ — "healthier than last month?". Status is for
+_triage_ — "what do I fix today?". Conflating them — pretending a 64% score is
+actionable — was the failure mode of the original version.
+
+**Why intent in the JSON, not just a comment?** An LLM reading the parsed output
+never sees the script. Carrying `intent` in-band makes the stream self-describing
+— the reader can reason about whether a finding matters without the source.
