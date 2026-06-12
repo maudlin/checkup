@@ -17,12 +17,13 @@ bin/checkup.sh ──┐  runs each check, normalising output via lib/run-tool.s
                  ├─►  reports/parsed/<slug>.json   (one per check)
                  │
 bin/checkup-report.sh ─►  iterates parsed/*.json  ─►  checkup-report.md
-                          (tool-agnostic)              + by-file.json
+                          (tool-agnostic)              + focus.json + by-file.json
 ```
 
 Each check: run a tool → parse its output → `write_parsed` a normalised record.
 The renderer never knows which tools ran — it just aggregates `parsed/*.json`
-into the summary, the cross-tool **Top Problems**, the **by-file hotspots**, and
+into the summary, the **Focus Areas** synthesis (the forensic axes + complexity
+fused per file), the cross-tool **Top Problems**, the **by-file hotspots**, and
 the per-check detail. Adding a check requires **no renderer change**.
 
 ## The parsed-JSON record
