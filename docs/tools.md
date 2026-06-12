@@ -18,6 +18,7 @@ and verify at all: [ADR-0001](decisions/0001-pin-and-verify-tool-downloads.md).)
 | gitleaks     | 8.30.1  | github.com/gitleaks/gitleaks      | SHA256 (matches upstream `checksums.txt`)       |
 | scc          | 3.7.0   | github.com/boyter/scc             | SHA256 (matches upstream `checksums.txt`)       |
 | semgrep      | 1.165.0 | PyPI                              | version pin (PyPI over TLS)                     |
+| lizard       | 1.23.0  | PyPI                              | version pin (PyPI over TLS)                     |
 | yamllint     | 1.35.1  | PyPI                              | version pin (PyPI over TLS)                     |
 | git, jq, python3 | distro | Debian bookworm               | distro package manager                          |
 

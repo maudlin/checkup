@@ -1083,30 +1083,35 @@ else
 fi
 echo ""
 
-# 13. Complexity Hotspots (ESLint — AST-aware)
+# 13. Complexity Hotspots (tiered engine: ESLint → lizard → scc)
 # section:    complexity
-# purpose:    Identify functions whose cyclomatic and cognitive complexity
-#             makes them likely bug-incubators. Powered by ESLint's built-in
-#             `complexity` rule (cyclomatic) and `sonarjs/cognitive-complexity`
-#             (cognitive). Both AST-aware via typescript-eslint, so TS class
-#             methods, decorators, JSX-in-TS, satisfies expressions etc. parse
-#             correctly.
-# pass_means: No functions over CCN 10 or cognitive complexity 15. Below those
-#             thresholds, functions are generally testable in isolation.
-# fail_means: Any function over CCN 30 or cognitive 30 — refactor or cover with
+# purpose:    Identify functions whose cyclomatic (and, on JS/TS, cognitive)
+#             complexity makes them likely bug-incubators. Three engines, picked
+#             by language (extension probe; #7 auto-detector will supersede):
+#               1. ESLint  — JS/TS: AST-accurate cyclomatic (`complexity`) AND
+#                  cognitive (`sonarjs/cognitive-complexity`) via
+#                  typescript-eslint, so TS class methods, decorators, JSX-in-TS,
+#                  satisfies expressions etc. parse correctly.
+#               2. lizard  — true per-function CCN for the many languages it
+#                  parses (C#, Java, Go, Python, C/C++, JS/TS, …). No cognitive.
+#               3. scc     — universal decision-keyword heuristic; the only
+#                  engine covering Classic ASP, so it stays the final fallback.
+# pass_means: No functions over CCN 10 (or cognitive 15 on the ESLint path).
+# fail_means: Any function over CCN 30 (or cognitive 30) — refactor or cover with
 #             dedicated tests. 20-29 = warning, 10/15-19 = low priority.
-# notes:      Previously powered by lizard. Lizard's state-machine TypeScript
-#             parser mis-attributes class-method CCN to the first top-level
-#             function preceding a class — generating false-positive hotspots
-#             on TS-heavy code. For a TS-dominant codebase, AST-correct
-#             measurement matters far more than lizard's multi-language reach;
-#             lizard remains a fine choice for non-TS stacks (see README).
+# notes:      ESLint is preferred for JS/TS specifically: lizard's state-machine
+#             TS parser mis-attributes class-method CCN to the first top-level
+#             function preceding a class, generating false positives on TS-heavy
+#             code. lizard (true CCN) and scc (heuristic) cover everything else.
+#             All three emit the same lizard-format CSV (col 2 = CCN, col 7 =
+#             file) that git-hotspots joins, so churn × complexity works on any
+#             stack.
 #
 #             Reporter thresholds (CCN 10, cognitive 15) are intentionally
 #             LOWER than typical gating thresholds in a project's ESLint
 #             config, so this surfaces hotspots without blocking the build.
 print_section "Complexity Hotspots"
-echo "Command: npx eslint --rule (complexity + cognitive, reporter mode)"
+echo "Command: complexity engine auto-selected by language (ESLint → lizard → scc)"
 echo ""
 
 COMPLEXITY_INTENT=$(jq -n '{
@@ -1123,11 +1128,39 @@ else
     for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { CPLX_SCC="$c"; break; }; done
 fi
 
-# Prefer ESLint for JS/TS (AST-accurate cyclomatic + cognitive); fall back to
-# scc's per-file complexity for any other language (no toolchain — covers C#,
-# ASP, Go, Python, …). Both write the same Tornhill CSV git-hotspots joins, so
-# the churn × complexity axis works on any stack, not just JS/TS.
-if command -v npx > /dev/null 2>&1; then
+# Resolve lizard (true multi-language per-function CCN; pip console script).
+CPLX_LIZARD=""
+if command -v lizard > /dev/null 2>&1; then
+    CPLX_LIZARD="lizard"
+else
+    for c in /usr/local/bin/lizard "$HOME/.local/bin/lizard"; do [ -x "$c" ] && { CPLX_LIZARD="$c"; break; }; done
+fi
+
+# Source roots that exist (shared by the lizard + scc engines). Non-standard
+# legacy layouts (a multi-site ASP app) have neither src/ nor server/ — scan
+# the whole tree then.
+CPLX_ROOTS=()
+for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && CPLX_ROOTS+=("$r"); done
+[ "${#CPLX_ROOTS[@]}" -eq 0 ] && CPLX_ROOTS=(".")
+
+# Engine selection — a three-tier ladder by descending accuracy:
+#   1. ESLint   — JS/TS only: AST-accurate cyclomatic AND cognitive complexity.
+#   2. lizard   — true per-function CCN for the many languages it parses
+#                 (C#, Java, Go, Python, C/C++, JS/TS, …). No cognitive metric.
+#   3. scc      — universal decision-keyword heuristic; the only engine that
+#                 covers Classic ASP, so it stays the final fallback.
+# All three emit the same lizard-format Tornhill CSV (col 2 = CCN, col 7 = file)
+# that git-hotspots joins, so churn × complexity works on every stack.
+#
+# Selection is an extension-count probe today; the #7 auto-detector will
+# supersede it. JS/TS present + npx → ESLint. Else any lizard-parseable source
+# + lizard → lizard. Else scc. (`-prune` keeps the probe cheap on big trees.)
+JSTS_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
+    -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
+LIZARD_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules \) -prune -o \
+    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
+
+if [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&1; then
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
     echo ""
 
@@ -1248,6 +1281,87 @@ if command -v npx > /dev/null 2>&1; then
                 "$TOP_FINDINGS" "$COMPLEXITY_INTENT"
         fi
     fi
+elif [ -n "$CPLX_LIZARD" ] && [ -n "$LIZARD_PROBE" ]; then
+    echo -e "${GREEN}✅ lizard available — true multi-language complexity${NC}"
+    echo ""
+
+    LIZARD_INTENT=$(jq -n '{
+        purpose:    "True per-function cyclomatic complexity across many languages (C#, Java, Go, Python, C/C++, JS/TS, …) via lizard. Sharper than the scc heuristic; feeds the churn × complexity git-hotspots join.",
+        pass_means: "No function over CCN 10.",
+        fail_means: "Any function over CCN 30 — refactor or cover with dedicated tests. 20-29 = warning, 10-19 = low. (Cognitive complexity is JS/TS-only, via ESLint.)"
+    }')
+
+    # --CCN 9999 forces a zero warning count so lizard exits 0 regardless of how
+    # many hotspots it finds; --csv still lists every function. The columns are
+    # the canonical lizard CSV (col 2 = CCN, col 7 = file) git-hotspots consumes.
+    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${CPLX_ROOTS[@]}"
+
+    # lizard --csv is CSV, not JSON — validate by content, not is_valid_json. The
+    # extension probe already confirmed lizard-parseable source exists, so empty
+    # output here is pathological (report it honestly rather than false-pass).
+    if [ ! -s "$LAST_RAW" ]; then
+        echo -e "${YELLOW}⚠️  lizard produced no output (exit $LAST_EXIT)${NC}"
+        write_failed "complexity" "lizard produced no output (exit $LAST_EXIT)" "$LIZARD_INTENT"
+    else
+        mkdir -p "$OUT_DIR"
+        # Canonical Tornhill CSV straight from lizard. Strip any leading "./" so
+        # paths are TARGET-relative and share one namespace with the churn join
+        # and the file-based scanners. Written unconditionally (even with zero
+        # reportable hotspots) so git-hotspots sees every file's max CCN.
+        sed 's#"\./#"#g' "$LAST_RAW" > "$OUT_DIR/complexity-full.csv"
+
+        # Parse the CSV. Fields 2 (CCN), 6 (location), 7 (file) and 8 (function)
+        # all precede column 9 (long_name), the only field that can contain
+        # commas — so a plain comma split reads them reliably. The start line
+        # comes from the location field ("name@start-end@file"), also pre-col-9.
+        ALL_FINDINGS=$(jq -R -s --arg root "$TARGET" '
+            def unq: gsub("^\"|\"$"; "");
+            [ split("\n")[]
+              | select(length > 0)
+              | split(",") as $f
+              | select(($f | length) >= 11)
+              | ($f[1] | tonumber) as $ccn
+              | ($f[5] | unq) as $loc
+              | ($f[6] | unq) as $file
+              | ($f[7] | unq) as $fname
+              | select($ccn >= 10)
+              | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
+              | {
+                  file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
+                  line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
+                  ccn: $ccn,
+                  code: ("CCN-" + ($ccn | tostring)),
+                  severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                  message: ($fname + " — CCN " + ($ccn | tostring))
+                }
+            ]
+        ' "$LAST_RAW")
+
+        TOTAL_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
+
+        if [ "$TOTAL_COUNT" -eq 0 ]; then
+            echo -e "${GREEN}✅ No functions over CCN 10${NC}"
+            write_parsed "complexity" "pass" 0 "No hotspots over CCN 10 (lizard, true per-function CCN)" '[]' "$LIZARD_INTENT"
+        else
+            TOP_FINDINGS=$(echo "$ALL_FINDINGS" | jq 'sort_by(-.ccn) | .[0:20] | map(del(.ccn))')
+            HIGHEST_CCN=$(echo "$ALL_FINDINGS" | jq '[.[].ccn] | max')
+
+            STATUS="warn"
+            [ "$HIGHEST_CCN" -ge 30 ] && STATUS="fail"
+
+            printf "%-7s %-50s %s\n" "Score" "Function" "Location"
+            echo "----------------------------------------------------------------------------------------"
+            echo "$TOP_FINDINGS" | jq -r '
+                .[] | [.code, ((.message | split(" — ")[0])[0:50]), (.file + ":" + (.line | tostring))] | @tsv
+            ' | awk -F'\t' '{ printf "%-7s %-50s %s\n", $1, $2, $3 }'
+            echo ""
+            echo -e "${BLUE}📈 Summary:${NC} $TOTAL_COUNT function(s) over CCN 10 (lizard; top 20 shown, highest $HIGHEST_CCN)"
+
+            write_parsed "complexity" "$STATUS" "$TOTAL_COUNT" \
+                "$TOTAL_COUNT function(s) over CCN 10 (lizard, true per-function CCN; top 20 reported, highest $HIGHEST_CCN)" \
+                "$TOP_FINDINGS" "$LIZARD_INTENT"
+        fi
+    fi
 elif [ -n "$CPLX_SCC" ]; then
     echo -e "${GREEN}✅ scc available — language-agnostic complexity${NC}"
     echo ""
@@ -1257,12 +1371,6 @@ elif [ -n "$CPLX_SCC" ]; then
         pass_means: "No file over the heuristic complexity band (25).",
         fail_means: "Files high on the heuristic are bug-incubators / refactor candidates — confirm with a language-aware tool. Reported as warn (heuristic, not a hard gate)."
     }')
-
-    # Scan declared source roots if they exist, else the whole tree (legacy /
-    # non-standard layouts like a multi-site ASP app have neither src/ nor server/).
-    CPLX_ROOTS=()
-    for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && CPLX_ROOTS+=("$r"); done
-    [ "${#CPLX_ROOTS[@]}" -eq 0 ] && CPLX_ROOTS=(".")
 
     run_tool "Complexity (scc)" "$CPLX_SCC" "${CPLX_ROOTS[@]}" \
         --by-file --format json --no-cocomo \
