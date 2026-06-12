@@ -48,3 +48,34 @@ jobs:
             done
             echo "all cross-stack tools present"
           '
+
+      # Dogfood: checkup scans itself for secrets (pinned gitleaks from the image,
+      # repo .gitleaks.toml allowlists the checksums). Fails the build on a hit.
+      - name: Secret self-scan (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" --entrypoint gitleaks checkup-core \
+            dir --no-banner --config /src/.gitleaks.toml /src
+
+  hygiene:
+    name: hygiene (no internal references)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Enforce the public-repo rule (AGENTS.md): no internal/client identifiers
+      # in the tree. The denylist lives in the BANNED_TERMS repo variable, not in
+      # git, so the public repo never lists the very names we're banning. Output
+      # is filenames only — never echo a matched term into the public log.
+      - name: No internal/client references
+        env:
+          BANNED: ${{ vars.BANNED_TERMS }}
+        run: |
+          if [ -z "$BANNED" ]; then
+            echo "::warning::BANNED_TERMS variable not set — internal-reference gate is a no-op"
+            exit 0
+          fi
+          if git grep -I -i -l -E "$BANNED" -- .; then
+            echo "::error::internal/client reference found in the file(s) listed above"
+            exit 1
+          fi
+          echo "no internal/client references"
