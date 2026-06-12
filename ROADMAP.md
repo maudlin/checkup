@@ -255,18 +255,15 @@ overlay: DevSkim, PMD CPD, dotnet-vuln). Ranked by value/fit.
 
 **Universal (core-friendly — single static binaries, no runtime):**
 
-- **Fixed — Trivy added to `checkup-core`** (the `trivy` SCA check). One Go
-  binary scanning dependency manifests/lockfiles for CVEs across ecosystems,
-  including **.NET `packages.config` WITHOUT a restore** — closing the
-  `dotnet-vuln` legacy gap, universally. Pinned + SHA256-verified against the
-  release's cosign/sigstore-signed `checksums.txt`. Residual hardening:
-  cosign-verify that signature in CI for the full chain (no cosign on the build
-  host today); bundle an offline DB for air-gapped scans (trivy downloads its DB
-  on first run, like semgrep `--config auto`). `dotnet-vuln` (overlay) now
-  overlaps trivy on modern .NET and could be retired once trivy is proven there.
-  (Scoped to `--scanners vuln` — secrets/misconfig stay with gitleaks/hadolint.)
-- **OSV-Scanner** (Google, Go binary) — lockfile CVEs, lighter than Trivy;
-  alternative if Trivy's breadth is overkill.
+- **Considered and removed — Trivy / deep SCA.** Trivy was briefly baked into
+  `checkup-core` then reverted: dependency-CVE scanning skewed checkup toward
+  security (a crowded market of dedicated scanners) and added meaningful image
+  weight for a signal that's a *small* part of the health story. checkup keeps
+  the lightweight security signals (gitleaks, semgrep, npm-audit, the overlay's
+  dotnet-vuln) and stays focused on the "where should this team focus?" health
+  axis (forensics, complexity, duplication). Deep SCA is a **bring-your-own**
+  add-on — see [`docs/build-your-own.md`](docs/build-your-own.md) for an opt-in
+  Trivy/OSV recipe. (See the non-goal below.)
 - **TruffleHog** — secret scanning with **live-credential verification** (would
   tell us whether an exposed cloud key is still active, not just present). Strong
   complement to gitleaks.
@@ -297,6 +294,14 @@ when the command-profile refactor (Phase 2) centralises scoring.
 
 ## Non-goals (for now)
 
+- **Being a dedicated security scanner.** checkup reports a few high-value
+  security signals (secrets, SAST, known-vulnerable npm/.NET deps) because they
+  bear on health, but deep SCA / DAST / full vulnerability management is a
+  crowded market with purpose-built tools. checkup's story is "where should this
+  team focus?" — forensics, complexity, duplication, hygiene — with security as a
+  *part*, not the centre. Need deep dependency-CVE scanning? Bring your own — the
+  [`docs/build-your-own.md`](docs/build-your-own.md) recipe shows how to bolt on
+  Trivy or OSV-Scanner as an opt-in.
 - Running an arbitrary stranger's full **build** in the image. That needs the
   project's own dependencies installed and only helps Node-style repos; teams
   with their own toolchain are better served running Checkup in their existing

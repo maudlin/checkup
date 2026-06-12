@@ -40,11 +40,11 @@ docker run --rm --network none \
 - `--read-only --tmpfs /tmp` — no persistence outside the mounted `/out`.
 - `--cap-drop ALL --security-opt no-new-privileges` — no capabilities, no escalation.
 
-**Caveat:** two checks need network and will `skip` under `--network none` until
-they're provisioned offline — `semgrep` (`--config auto` fetches rules) and
-`trivy` (downloads its vuln DB on first run). Everything else (gitleaks, scc,
-shellcheck, yamllint, hadolint, git-forensics, the Classic-ASP rules) runs fully
-air-gapped today. Making sealed mode lossless is tracked in the ROADMAP / issues.
+**Caveat:** one check needs network and will `skip` under `--network none` until
+it's provisioned offline — `semgrep` (`--config auto` fetches rules). Everything
+else (gitleaks, scc, shellcheck, yamllint, hadolint, git-forensics, the
+Classic-ASP rules) runs fully air-gapped today. Making sealed mode lossless is
+tracked in the ROADMAP / issues.
 
 ## What this tool reports is not a vulnerability in checkup
 
