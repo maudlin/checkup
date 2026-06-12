@@ -61,13 +61,15 @@ RUN set -eux; \
 FROM debian:bookworm-slim
 ARG YAMLLINT_VERSION=1.35.1
 ARG SEMGREP_VERSION=1.165.0
+ARG LIZARD_VERSION=1.23.0
 # pip deps are version-pinned for reproducible reports (PyPI integrity over TLS).
-# Full hash-pinning (pip --require-hashes) would need every transitive dep hashed
-# — a heavier follow-up tracked in ROADMAP.
+# lizard is the mid-tier complexity engine (true multi-language per-function CCN);
+# pure-Python, no native build. Full hash-pinning (pip --require-hashes) would
+# need every transitive dep hashed — a heavier follow-up tracked in ROADMAP.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash git jq ca-certificates python3 python3-pip \
     && pip3 install --no-cache-dir --break-system-packages \
-        "yamllint==${YAMLLINT_VERSION}" "semgrep==${SEMGREP_VERSION}" \
+        "yamllint==${YAMLLINT_VERSION}" "semgrep==${SEMGREP_VERSION}" "lizard==${LIZARD_VERSION}" \
     && apt-get purge -y --auto-remove python3-pip \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 

@@ -228,12 +228,18 @@ Windows filesystem via WSL. What it taught us:
   any stack** too. Validated on a legacy ASP/C# app: complexity went `skip` →
   `warn` (72 files over the heuristic band, top a ~1,700-line code-behind at
   complexity 359); core on the checkup repo produced the CSV and hotspots
-  consumed it (skipped only on the legitimate ≥10-files quintile guard). Caveats:
-  scc complexity is a decision-keyword heuristic, not true per-function CCN
-  (documented in the check's intent; `lizard` is a future precision upgrade for
-  the languages it parses); and hotspots still needs real git **history**
-  (churn), so a non-git snapshot gets complexity ranking but not churn ×
-  complexity.
+  consumed it (skipped only on the legitimate ≥10-files quintile guard). Hotspots
+  still needs real git **history** (churn), so a non-git snapshot gets complexity
+  ranking but not churn × complexity.
+- **Fixed — true multi-language complexity via `lizard`.** The complexity check
+  is now a three-tier engine picked by language: **ESLint** (JS/TS, AST-accurate
+  cyclomatic + cognitive) → **lizard** (true per-function CCN for C#, Java, Go,
+  Python, C/C++, …) → **scc** (universal decision-keyword heuristic, the only
+  engine covering Classic ASP, so it stays the final fallback). lizard's native
+  `--csv` IS the Tornhill CSV git-hotspots consumes, so the churn × complexity
+  join sharpens on the .NET/legacy stacks without any glue. lizard is pip-pinned
+  in checkup-core (pure-Python). Engine selection is an extension probe today;
+  the #7 auto-detector will supersede it.
 - **Fixed (overlay) — duplication is no longer node-locked.** `checkup-dotnet`
   bakes **PMD CPD** (+ JRE); the `duplication` check runs CPD for C# (and
   ecmascript when present), replacing the Node-only jscpd path. Validated on a
@@ -267,7 +273,9 @@ overlay: DevSkim, PMD CPD, dotnet-vuln). Ranked by value/fit.
 - **TruffleHog** — secret scanning with **live-credential verification** (would
   tell us whether an exposed cloud key is still active, not just present). Strong
   complement to gitleaks.
-- **lizard** (pip) — true multi-language cyclomatic complexity (C#, Java, Go,
+- ~~**lizard** (pip) — true multi-language cyclomatic complexity~~ — **shipped**
+  (see "Fixed — true multi-language complexity via lizard" above). Original note:
+  true multi-language cyclomatic complexity (C#, Java, Go,
   Python, …). A precision upgrade over the current scc-heuristic complexity for
   the languages it parses (it does **not** cover Classic ASP — keep scc as the
   universal fallback).
