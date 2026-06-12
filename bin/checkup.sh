@@ -2233,11 +2233,10 @@ echo ""
 # fail_means: Branches idle ≥ 90 days — likely abandoned or forgotten.
 #             Informational; never gates the build. Does NOT delete
 #             anything — the check only surfaces.
-# notes:      `top[].file` uses a `branch:<name>` pseudo-path because
-#             branches aren't files. The by-file aggregate treats these
-#             as distinct paths — they'll sit at the bottom of the
-#             ranking with a count of 1, which is the desired
-#             behaviour.
+# notes:      Branches aren't files, so findings carry the branch name in
+#             `message` and leave `top[].file` empty — the by-file aggregate
+#             (which counts only real paths) excludes them, keeping the spatial
+#             hotspot ranking about source files alone.
 print_section "Branch Hygiene"
 echo "Command: git for-each-ref refs/heads/ refs/remotes/origin/"
 echo ""
@@ -2292,11 +2291,11 @@ else
                 warningCount: (map(select(.severity == "warning")) | length),
                 lowCount:     (map(select(.severity == "low"))     | length),
                 findings: (.[0:20] | map({
-                    file: ("branch:" + .branch),
+                    file: "",
                     line: 1,
                     code: "stale-branch",
                     severity,
-                    message: ("idle " + (.age | tostring) + " days (last commit " + .date + ")")
+                    message: (.branch + " — idle " + (.age | tostring) + " days (last commit " + .date + ")")
                 }))
             }
         ')
@@ -2305,8 +2304,8 @@ else
         BRANCH_LOW_COUNT=$(echo "$BRANCH_JSON" | jq -r '.lowCount')
         BRANCH_TOP=$(echo "$BRANCH_JSON" | jq -c '.findings')
 
-        BRANCH_W_S=$([ "$BRANCH_WARN_COUNT" = "1" ] || echo "s")
-        BRANCH_L_S=$([ "$BRANCH_LOW_COUNT" = "1" ] || echo "s")
+        BRANCH_W_S=$([ "$BRANCH_WARN_COUNT" = "1" ] || echo "es")
+        BRANCH_L_S=$([ "$BRANCH_LOW_COUNT" = "1" ] || echo "es")
 
         printf "%-6s %-7s %s\n" "Tier" "Age" "Branch"
         echo "----------------------------------------------------------------------------------------"
@@ -2315,7 +2314,7 @@ else
             | [
                 ({"warning":">90d","low":"30-89d"}[.severity] // .severity),
                 (.message | capture("idle (?<d>\\d+)") | .d + "d"),
-                (.file | sub("^branch:"; ""))
+                (.message | split(" — ")[0])
               ]
             | @tsv
         ' | awk -F'\t' '{ printf "%-6s %-7s %s\n", $1, $2, $3 }'
