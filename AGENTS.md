@@ -35,8 +35,11 @@ This repo is **public**. Hard rules:
 - **Don't break consumers** — `parsed/<slug>.json` stays backward-compatible;
   absent tool / empty output → `skip`, never a false pass; keep `checkup-core`
   lean (one overlay = one stack). Respect MIT; don't bundle incompatible tools.
-- **Process** — PRs only (`main` is protected), CI green before merge, linear
-  history, no force-push. Conventional commits, British English.
+- **Workflow** — issue first; branch `<issue#>-slug` (use the issue's _Create a
+  branch_); commit referencing it; open a PR with `Closes #N` (draft while WIP);
+  CI green; **a human merges (squash) — agents never merge their own PR**
+  (ADR-0007). `main` is protected: no direct pushes, linear history, no
+  force-push. Conventional commits, British English.
 - **Adding a check** — follow the contract ([`README.md`](README.md#the-contract)):
   documented `intent`, emit via `write_parsed`/`write_skipped`/`write_failed`.
   The renderer picks it up automatically.

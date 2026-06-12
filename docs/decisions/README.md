@@ -18,3 +18,4 @@ Format: **Context · Decision · Consequences · Status**.
 | 0004 | [Layered images (core + per-stack overlays)](0004-layered-images.md) | Accepted |
 | 0005 | [checkup is a template, not a product](0005-template-not-product.md) | Accepted |
 | 0006 | [Restricted contribution model](0006-restricted-contribution-model.md) | Accepted |
+| 0007 | [Human-gated merges (agents never self-merge)](0007-human-gated-merges.md) | Accepted |

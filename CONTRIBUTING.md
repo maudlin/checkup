@@ -39,6 +39,10 @@ bash test/run-tool.test.sh        # helper unit tests
 CI runs exactly these, plus a `checkup-core` image build. `main` is protected:
 changes land via PR with CI green.
 
+Workflow: issue first → branch `<issue#>-slug` → PR with `Closes #N` → CI green →
+a **human** merges (squash). Agents never merge their own PR — see
+[`AGENTS.md`](AGENTS.md) and [ADR-0007](docs/decisions/0007-human-gated-merges.md).
+
 ## Adding a check
 
 Every check follows the contract documented in the [README](README.md#the-contract):
