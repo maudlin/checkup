@@ -33,7 +33,7 @@ to run on sensitive code.
   the supply-chain pinning (ADR-0001).
 - `--network none` is an **operator-side flag** — the image can't self-enforce
   it; the docs make it the default recommendation for sensitive runs.
-- Two checks need network and `skip` under no-egress until provisioned offline:
-  `semgrep` (`--config auto`) and `trivy` (vuln-DB download). Making sealed mode
-  **lossless** — bundling an offline semgrep ruleset and a pre-downloaded trivy
-  DB — is the open follow-up; everything else already runs air-gapped.
+- One check needs network and `skip`s under no-egress until provisioned offline:
+  `semgrep` (`--config auto`). Making sealed mode **lossless** — bundling an
+  offline semgrep ruleset — is the open follow-up; everything else already runs
+  air-gapped.

@@ -46,7 +46,7 @@ repo (e.g. as a git submodule) and call `bin/checkup.sh` from an npm/make task.
 
 ### Run in Docker (no host installs)
 
-The `checkup-core` image bakes the cross-stack tools (gitleaks, semgrep, trivy,
+The `checkup-core` image bakes the cross-stack tools (gitleaks, semgrep,
 shellcheck, yamllint, hadolint, scc) so you can examine **any** repository with
 nothing installed but Docker — ideal for ad-hoc audits and due diligence:
 

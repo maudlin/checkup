@@ -45,6 +45,32 @@ docker rm tmp
 
 See [tools.md](tools.md) for the full catalogue and upstreams.
 
+## Opt-in: deep dependency-CVE scanning (Trivy / OSV)
+
+Deep SCA is a deliberate **non-goal** for core (see [`ROADMAP.md`](../ROADMAP.md)
+— checkup is not a dedicated security scanner). The lightweight dep signals stay
+in: `npm-audit` (core) and `dotnet-vuln` (the .NET overlay). If you want
+cross-ecosystem CVE scanning, bolt it on in **your** copy as one more check.
+
+Add the binary to your image (pinned + SHA256-verified, ADR-0001) — e.g. Trivy:
+
+```dockerfile
+# in your tools stage:
+ARG TRIVY_VERSION=0.71.0
+ARG TRIVY_SHA256=<sha256 from the release's checksums.txt>
+RUN curl -fsSL -o trivy.tar.gz \
+      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"; \
+    echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -; \
+    tar -xzf trivy.tar.gz; install -m 0755 trivy /usr/local/bin/trivy
+```
+
+Then add a section to your `bin/checkup.sh` following the worked-example shape
+below — `trivy fs --scanners vuln --format json --output "$OUT" .`, mapping
+`CRITICAL/HIGH` → `fail`, `MEDIUM/LOW` → `warn`. Note Trivy downloads its vuln DB
+on first run (needs network, or a pre-seeded cache for sealed/`--network none`
+runs); [OSV-Scanner](https://github.com/google/osv-scanner) is a lighter
+lockfile-only alternative.
+
 ---
 
 ## Forking the substrate into a new repo
