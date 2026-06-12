@@ -206,6 +206,82 @@ BY_FILE_MD=$(echo "$BY_FILE" | jq -r '
     end
 ')
 
+# Focus Areas — the "where should this team focus first?" synthesis. Fuses the
+# four per-file health axes (the Tornhill forensic trio + complexity) by file,
+# so a file that lands on MULTIPLE axes — hot × complex AND coupled AND
+# bug-dense — rises to the top. This is the report's headline view; everything
+# else is detail. Renderer-only: works on any repo whose run produced these
+# checks (git history for the forensic axes, any complexity engine), and is
+# simply empty when none ran.
+#
+# Scoring: each finding contributes a weight (axis × severity tier); a file's
+# focusScore is their sum. Ranking is axisCount-first (multi-signal
+# concentration is the whole point) then focusScore. The `why` carries one
+# human phrase per axis — the strongest-severity message for that axis — so the
+# row explains itself ("hotspot: 47 changes × CCN 31 · bug-fix: 57% …").
+FOCUS=$(jq -s \
+    --arg root "$REPO_ROOT_TRIM" \
+    --arg home "$HOME_TRIM" '
+    def normPath:
+        (. // "")
+        | tostring
+        | if startswith($root) then .[($root | length):] else . end
+        | if startswith($home) then "~/" + .[($home | length):] else . end;
+    # Map a forensic finding to its axis + weight. Non-forensic slugs yield
+    # `empty`, dropping the row (defence-in-depth; the select below also filters).
+    def axisFor($slug; $sev):
+        if   $slug == "git-hotspots"   then {axis:"hotspot",    weight:({"warning":3,"low":1,"info":0.5}[$sev] // 0.5)}
+        elif $slug == "bug-fix-density" then {axis:"bug-fix",    weight:({"warning":2.5,"low":1}[$sev] // 1)}
+        elif $slug == "change-coupling" then {axis:"coupling",   weight:({"warning":2,"low":1}[$sev] // 1)}
+        elif $slug == "complexity"     then {axis:"complexity", weight:({"error":2,"high":2,"warning":1.5,"medium":1.5,"low":1,"info":0.5}[$sev] // 1)}
+        else empty end;
+    def sevRank: ({"critical":0,"error":0,"high":0,"warning":1,"medium":1,"low":2,"style":2,"info":3}[.] // 3);
+    [ .[]
+      | select(.slug == "git-hotspots" or .slug == "bug-fix-density" or .slug == "change-coupling" or .slug == "complexity")
+      | . as $check
+      | (.top // [])[]
+      | select(.file != null and .file != "")
+      | (axisFor($check.slug; .severity)) as $a
+      | {file: (.file | normPath), axis: $a.axis, weight: $a.weight, severity, message}
+    ]
+    | group_by(.file)
+    | map({
+        file: .[0].file,
+        axes: ([.[].axis] | unique),
+        axisCount: ([.[].axis] | unique | length),
+        focusScore: ([.[].weight] | add),
+        why: (
+            group_by(.axis)
+            | map({axis: .[0].axis,
+                   detail: (sort_by(.severity | sevRank) | .[0].message)})
+            | sort_by({"hotspot":0,"bug-fix":1,"coupling":2,"complexity":3}[.axis] // 9)
+            | map(.axis + ": " + .detail)
+        )
+      })
+    | sort_by(-.axisCount, -.focusScore)
+' "${PARSED_FILES[@]}")
+
+# Persist the full ranking for LLM / CI / trend consumers
+echo "$FOCUS" > "$OUT_DIR/focus.json"
+
+# Top 10 as a markdown table. `safe` also escapes `|` here because a filename in
+# a coupling `why` phrase could otherwise break the table layout.
+FOCUS_MD=$(echo "$FOCUS" | jq -r '
+    def safe: (. // "") | tostring | gsub("\\s+"; " ") | gsub("<"; "&lt;") | gsub("\\|"; "\\\\|");
+    if length == 0 then
+        "_No focus signals yet — this view needs git history (hotspots / change-coupling / bug-fix density) and/or a complexity engine. See the per-check details for why each was skipped._"
+    else
+        (["| File | Axes | Focus | Why |",
+          "| ---- | ---- | ----: | --- |"] +
+          (.[0:10] | map(
+              "| `" + (.file | safe) + "` | " + (.axisCount | tostring) + " | " +
+              ((.focusScore * 10 | round / 10) | tostring) + " | " +
+              ((.why | join(" · ")) | safe) + " |"
+          ))
+        ) | join("\n")
+    end
+')
+
 # Per-check details — iterates every parsed JSON, renders intent + summary + top.
 # Same sanitisation contract as Top Problems above: collapse whitespace and
 # escape `<` on any tool-influenceable field before it lands in a <details>
@@ -252,15 +328,18 @@ below for triage.
 
 ## How to read this
 
-Four sections, in priority order:
+Five sections, in priority order:
 
 1. **Summary** — counts of pass / warn / fail / skip across every check.
    If \`fail\` > 0 ship is blocked.
-2. **Top Problems** — single cross-tool triage list, severity-sorted.
+2. **Focus Areas** — the "where should we focus first?" view. Files ranked by
+   how many health axes they land on (hot × complex, coupled, bug-dense), with
+   a one-line _why_. Start here for "where is the risk concentrated?"
+3. **Top Problems** — single cross-tool triage list, severity-sorted.
    Start here for "what should I fix first?"
-3. **Files with most findings** — files surfaced by multiple checks;
+4. **Files with most findings** — files surfaced by multiple checks;
    statistically higher-risk for bugs.
-4. **Per-check details** — every check's status, summary, and intent
+5. **Per-check details** — every check's status, summary, and intent
    (\`purpose\`, \`pass_means\`, \`fail_means\`). Top findings collapsed
    inline.
 
@@ -271,7 +350,8 @@ Four sections, in priority order:
 high → warning / medium → low / style → info.
 
 Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
-\`reports/by-file.json\` for the cross-cut.
+\`reports/focus.json\` (the focus ranking) and \`reports/by-file.json\`
+(the cross-cut).
 
 ## Summary
 
@@ -281,6 +361,20 @@ Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
 | ⚠️  warn   | $WARN |
 | ❌ fail    | $FAIL |
 | ⏭️  skip   | $SKIP |
+
+## Focus Areas
+
+_Where should this team focus first?_ Files ranked by how many health axes
+they land on — the Tornhill forensic trio (\`git-hotspots\` = churn × complexity,
+\`change-coupling\`, \`bug-fix-density\`) plus \`complexity\`. A file high on
+**several** axes is where risk concentrates: changed often, hard to reason
+about, entangled with its neighbours, and historically bug-prone. **Axes** is
+how many of the four it appears on; **Why** is the headline reason per axis.
+This is a focus signal, not a gate — it never blocks a build.
+
+$FOCUS_MD
+
+Full ranking: \`reports/focus.json\`.
 
 ## Top Problems
 

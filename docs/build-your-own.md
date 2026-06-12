@@ -88,7 +88,7 @@ Framework-agnostic and load-bearing — copy as-is, do not modify:
   `write_failed` / `is_valid_json` / `slug` helpers. Their signatures are the
   contract; modifying them silently breaks every section that depends on them.
 - `bin/checkup-report.sh` — the renderer. Tool-agnostic: reads
-  `reports/parsed/*.json`, writes the report + by-file aggregate.
+  `reports/parsed/*.json`, writes the report + focus & by-file aggregates.
 - The status vocabulary (`pass`/`warn`/`fail`/`skip`), severity vocabulary
   (`critical`/`error`/`high`/`warning`/`medium`/`low`/`style`/`info`), and the
   parsed-JSON shape (`{slug, status, count, summary, top, intent}`). Drift here

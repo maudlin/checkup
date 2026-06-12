@@ -508,6 +508,10 @@ reports/                        # gitignored (whole tree)
 │   ├── complexity.json
 │   ├── eslint.json
 │   └── …
+├── focus.json                  # derived "where to focus" ranking — files
+│                               #   ranked by how many health axes they land
+│                               #   on (hotspot / coupling / bug-fix density /
+│                               #   complexity), each with a per-axis "why".
 ├── by-file.json                # derived cross-cut — files ranked by
 │                               #   severity-weighted finding count across
 │                               #   every check. Combined with the
@@ -527,8 +531,21 @@ docs/reports/                   # committed
 
 ## Cross-tool aggregates
 
-The markdown writer computes two cross-tool views automatically — no check
+The markdown writer computes three cross-tool views automatically — no check
 contributes to them directly; they emerge from the standardised parsed JSON.
+
+### Focus Areas (`reports/focus.json`)
+
+The report's headline "where should this team focus first?" view. Fuses the
+four per-file **health axes** — `git-hotspots` (churn × complexity),
+`change-coupling`, `bug-fix-density`, and `complexity` — by file, so a file
+landing on **several** axes (hot × complex _and_ coupled _and_ bug-dense)
+rises to the top. Ranking is axis-count first (multi-signal concentration is
+the point), then a severity-weighted focus score; each row carries a one-line
+`why` (the strongest message per axis). Renderer-only, so it works on any
+stack whose run produced those checks, and is simply empty when none did. It
+is a focus signal, never a gate. Full ranking → `reports/focus.json`; the
+report shows the top 10.
 
 ### Top Problems
 
