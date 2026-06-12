@@ -21,6 +21,31 @@ repository. The most relevant concerns are:
   HTML-escape) before they reach the Markdown report; report any way to break out
   of that.
 
+## Running it safely on sensitive code (recommended)
+
+checkup runs third-party tools over your source, so treat the scanner as
+potentially hostile and **deny it the ability to leak or tamper**. For
+sensitive or due-diligence scans, run it sealed:
+
+```bash
+docker run --rm --network none \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges \
+  -v "$PWD:/src:ro" -v "$PWD/checkup-out:/out" checkup-core
+```
+
+- `--network none` — **no egress**, so nothing can exfiltrate the scanned code
+  (the primary exfiltration control; see ADR-0008).
+- `-v …:/src:ro` — source mounted read-only; the scan can't modify your repo.
+- `--read-only --tmpfs /tmp` — no persistence outside the mounted `/out`.
+- `--cap-drop ALL --security-opt no-new-privileges` — no capabilities, no escalation.
+
+**Caveat:** two checks need network and will `skip` under `--network none` until
+they're provisioned offline — `semgrep` (`--config auto` fetches rules) and
+`trivy` (downloads its vuln DB on first run). Everything else (gitleaks, scc,
+shellcheck, yamllint, hadolint, git-forensics, the Classic-ASP rules) runs fully
+air-gapped today. Making sealed mode lossless is tracked in the ROADMAP / issues.
+
 ## What this tool reports is not a vulnerability in checkup
 
 Findings checkup surfaces about a *scanned* project (secrets, SQLi, etc.) are

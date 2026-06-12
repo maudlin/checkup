@@ -65,6 +65,10 @@ The source is mounted read-only — checkup writes nothing into it; everything
 goes to `/out`. Mount a full clone (not a shallow/exported tree) so the
 git-forensics checks have history.
 
+For sensitive or due-diligence scans, run it **sealed** (`--network none` + a
+minimal sandbox) so a compromised tool can't exfiltrate the code — see
+[`SECURITY.md`](SECURITY.md#running-it-safely-on-sensitive-code-recommended).
+
 What runs in `checkup-core`: the cross-stack security, hygiene and forensics
 checks (secrets, SAST, shell/YAML/Dockerfile lint, stats, churn × complexity).
 Language- and build-specific checks (typecheck, test, build, coverage) belong
