@@ -62,7 +62,7 @@ Artifact readers freshness-gate what they consume so a stale report can't pass.
 
 ## Checks
 
-- **Cross-stack** (any repo, in `checkup-core`): `gitleaks`, `semgrep`,
+- **Cross-stack** (any repo, in `checkup-core`): `gitleaks`, `semgrep`, `trivy`,
   `shellcheck`, `yamllint`, `hadolint`, `codebase-stats`, `complexity`,
   `git-hotspots`, `change-coupling`, `bug-fix-density`, `branch-hygiene`.
 - **Project-built** (Node, in core; skip without the toolchain): `typecheck`,
