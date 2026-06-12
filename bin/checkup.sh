@@ -119,8 +119,8 @@ TS_INTENT=$(jq -n '{
 
 run_tool "TypeScript Type Checking" npm run typecheck
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "typecheck" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$TS_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "typecheck" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$TS_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 25))
 if [ "$LAST_EXIT" = "0" ]; then
@@ -184,8 +184,8 @@ UT_INTENT=$(jq -n '{
 
 run_tool "Unit Tests" npm test
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "unit-tests" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$UT_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "unit-tests" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$UT_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 30))
 # Vitest's summary uses ANSI; strip before regex.
@@ -255,8 +255,8 @@ CQ_INTENT=$(jq -n '{
 # Formatting — binary outcome
 run_tool "Code Quality Format" npm run format:check
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "code-quality" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$CQ_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "code-quality" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$CQ_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 15))
 FORMAT_OK="true"
@@ -365,8 +365,8 @@ if [ ! -f eslint.config.type-aware.js ]; then
 else
 run_tool "Type-Aware Lint Rules" npx eslint -c eslint.config.type-aware.js
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npx) not on PATH${NC}"
-    write_skipped "type-aware-lint" "Node toolchain (npx) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$TAL_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npx not on PATH${NC}"
+    write_skipped "type-aware-lint" "Node-stack check skipped — no package.json at the target, or npx not on PATH" "$TAL_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 
@@ -451,8 +451,8 @@ BUILD_INTENT=$(jq -n '{
 
 run_tool "Production Build" npm run build
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "build" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$BUILD_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "build" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$BUILD_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 20))
 if [ "$LAST_EXIT" = "0" ]; then
@@ -573,8 +573,8 @@ AUDIT_INTENT=$(jq -n '{
 
 run_tool "Security Vulnerabilities" npm audit --json
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "npm-audit" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$AUDIT_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "npm-audit" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$AUDIT_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 10))
 # npm audit exits non-zero (1) when any advisory exists. That's expected;
@@ -651,8 +651,8 @@ DEPS_INTENT=$(jq -n '{
 
 run_tool "Dependency Freshness" npm outdated --json
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "deps-freshness" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$DEPS_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "deps-freshness" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$DEPS_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # npm outdated exits 1 when outdated packages exist (expected); empty output
@@ -720,8 +720,8 @@ MADGE_INTENT=$(jq -n '{
 MADGE_MARKER="$RAW_DIR/.circular-deps.marker"; : > "$MADGE_MARKER"
 run_tool "Circular Dependencies" npm run quality:deps
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "circular-deps" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$MADGE_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "circular-deps" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$MADGE_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # Trust only a report this run produced — a stale reports/madge-circular.json
@@ -780,8 +780,8 @@ JSCPD_INTENT=$(jq -n '{
 JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
 run_tool "Code Duplication" npm run quality:duplicates
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "duplication" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$JSCPD_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "duplication" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$JSCPD_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # Trust only a report this run produced — a stale reports/jscpd/jscpd-report.json
@@ -849,8 +849,8 @@ KNIP_INTENT=$(jq -n '{
 
 run_tool "Unused Code Detection" npm run quality:unused
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "unused-code" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$KNIP_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "unused-code" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$KNIP_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 KNIP_OUTPUT=$(cat "$LAST_RAW")
@@ -948,8 +948,8 @@ COVERAGE_INTENT=$(jq -n '{
 COV_MARKER="$RAW_DIR/.coverage.marker"; : > "$COV_MARKER"
 run_tool "Test Coverage" npm run test:coverage:report
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — Node toolchain (npm) not on PATH${NC}"
-    write_skipped "coverage" "Node toolchain (npm) not on PATH — Node-stack check; run on a host with Node or use a Node-enabled image" "$COVERAGE_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
+    write_skipped "coverage" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$COVERAGE_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # Trust only a summary this run produced — a stale coverage/coverage-summary.json

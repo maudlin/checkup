@@ -46,15 +46,18 @@ is_valid_json() {
     [ -s "$1" ] && jq -e . "$1" >/dev/null 2>&1
 }
 
-# toolchain_absent — true when the most recent run_tool call's command was not
-# on PATH (LAST_EXIT 127; run_tool also promotes `npm run <missing-script>` to
-# 127). Stack-specific sections (typecheck, test, build, lint, coverage, …) gate
-# on this so a missing toolchain yields an honest `skip` rather than a misread:
-# a missing tool produces empty output that naive parsers count as "zero
-# findings → pass", or a non-zero exit they record as a real failure. This is
-# the graceful-degrade path run_tool's 127 contract was written to feed.
+# toolchain_absent — true when the Node-stack checks can't meaningfully run here,
+# i.e. the most recent run_tool command wasn't on PATH (LAST_EXIT 127; run_tool
+# also promotes `npm run <missing-script>` to 127) OR the target has no
+# `package.json` (so it isn't a Node project at all). The latter matters because
+# with npm installed but no package.json, `npm run …` exits non-127 — without
+# this the Node sections would false-`fail` on a non-Node repo scanned from a
+# host that happens to have node. Stack-specific sections (typecheck, test,
+# build, lint, coverage, …) gate on this for an honest `skip` rather than a
+# misread (empty output counted as "zero findings → pass", or a spurious fail).
+# Caller's cwd is the scan target ($TARGET), so the package.json probe is correct.
 toolchain_absent() {
-    [ "${LAST_EXIT:-0}" = "127" ]
+    [ "${LAST_EXIT:-0}" = "127" ] || [ ! -f package.json ]
 }
 
 # is_fresh <path> <marker> — true if <path> is valid JSON AND newer than
