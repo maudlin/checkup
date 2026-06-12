@@ -563,6 +563,72 @@ else
 fi
 echo ""
 
+# 5b. Dependency Vulnerabilities (Trivy)
+# section:    trivy
+# purpose:    Universal SCA — known CVEs in dependency manifests/lockfiles across
+#             ecosystems (npm, pip, go, Maven, .NET incl. packages.config WITHOUT
+#             a restore). The dependency-CVE axis, complementing semgrep (SAST)
+#             and gitleaks (secrets). Works on any stack, in checkup-core.
+# pass_means: No known vulnerable dependencies.
+# fail_means: Any HIGH/CRITICAL advisory — upgrade or pin. MEDIUM/LOW = warn.
+# notes:      trivy downloads its vulnerability DB on first run (needs network),
+#             then caches it — same model as semgrep's `--config auto`.
+print_section "Dependency Vulnerabilities (Trivy)"
+echo "Command: trivy fs --scanners vuln ."
+echo ""
+
+TRIVY_INTENT=$(jq -n '{
+    purpose:    "Universal SCA — known CVEs in dependency manifests/lockfiles across ecosystems (npm, pip, go, Maven, .NET incl. packages.config without a restore). The dependency-CVE axis, complementing semgrep (SAST) and gitleaks (secrets).",
+    pass_means: "No known vulnerable dependencies.",
+    fail_means: "Any HIGH/CRITICAL advisory — upgrade or pin. MEDIUM/LOW are advisory (warn)."
+}')
+
+if ! command -v trivy > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  trivy not installed — use the checkup-core image, or install from github.com/aquasecurity/trivy${NC}"
+    write_skipped "trivy" "trivy not on PATH — use the checkup-core image or install trivy" "$TRIVY_INTENT"
+else
+    MAX_SCORE=$((MAX_SCORE + 10))
+    TRIVY_REPORT="$OUT_DIR/trivy-report.json"
+    run_tool "Dependency Vulnerabilities" trivy fs --scanners vuln --quiet --format json --output "$TRIVY_REPORT" .
+    if [ ! -s "$TRIVY_REPORT" ] || ! is_valid_json "$TRIVY_REPORT"; then
+        echo -e "${YELLOW}⚠️  trivy produced no parseable report (exit $LAST_EXIT)${NC}"
+        write_failed "trivy" "trivy produced no parseable JSON (exit $LAST_EXIT) — vulnerability DB download may have failed (needs network on first run)" "$TRIVY_INTENT"
+    else
+        T_TOTAL=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$TRIVY_REPORT")
+        T_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$TRIVY_REPORT")
+        T_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$TRIVY_REPORT")
+        T_MED=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' "$TRIVY_REPORT")
+        T_LOW=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")] | length' "$TRIVY_REPORT")
+        TRIVY_TOP=$(jq -c '
+            [ .Results[]? as $r | ($r.Vulnerabilities[]? | {
+                file: $r.Target,
+                line: 1,
+                code: .VulnerabilityID,
+                severity: ({"CRITICAL":"critical","HIGH":"high","MEDIUM":"medium","LOW":"low"}[.Severity] // "info"),
+                message: (.PkgName + " " + (.InstalledVersion // "?") + " — " + .VulnerabilityID + " (" + .Severity + (if .FixedVersion then "; fix " + .FixedVersion else "" end) + ")")
+            }) ]
+            | sort_by({"critical":0,"high":1,"medium":2,"low":3}[.severity] // 4)
+            | .[0:10]
+        ' "$TRIVY_REPORT")
+        if [ "$T_CRIT" -gt 0 ] || [ "$T_HIGH" -gt 0 ]; then
+            echo -e "${RED}🚨 $T_CRIT critical, $T_HIGH high vulnerable dependencies (0/10)${NC}"
+            TRIVY_STATUS="fail"
+        elif [ "$T_TOTAL" -gt 0 ]; then
+            echo -e "${YELLOW}⚠️  $T_MED medium, $T_LOW low vulnerable dependencies (5/10)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 5))
+            TRIVY_STATUS="warn"
+        else
+            echo -e "${GREEN}✅ No known vulnerable dependencies (10/10)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 10))
+            TRIVY_STATUS="pass"
+        fi
+        write_parsed "trivy" "$TRIVY_STATUS" "$T_TOTAL" \
+            "$T_CRIT critical, $T_HIGH high, $T_MED medium, $T_LOW low (dependency CVEs)" \
+            "$TRIVY_TOP" "$TRIVY_INTENT"
+    fi
+fi
+echo ""
+
 # 6. Security Audit (npm audit)
 # section:    npm-audit
 # purpose:    Scan installed npm dependencies against the GitHub Advisory Database.

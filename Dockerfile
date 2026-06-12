@@ -32,6 +32,12 @@ ARG SHELLCHECK_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e
 ARG HADOLINT_SHA256=6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47
 ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 ARG SCC_SHA256=3d9d65b00ca874c2b29151abe7e1480736f5229edc3ce8e4b2791460cdfabf5a
+# Trivy (universal SCA — dependency CVEs across npm/pip/go/.NET/etc., incl. .NET
+# packages.config WITHOUT a restore). Trivy had a published supply-chain
+# advisory, so pin strictly: this SHA256 matches the release's checksums.txt,
+# which is cosign/sigstore-signed (verify the signature in CI for the full chain).
+ARG TRIVY_VERSION=0.71.0
+ARG TRIVY_SHA256=30a3d22b23f88c233f1658f562fb477cae3b3e8b4761109d515b7698daf85814
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates xz-utils tar \
     && rm -rf /var/lib/apt/lists/*
@@ -55,7 +61,12 @@ RUN set -eux; \
     curl -fsSL -o scc.tar.gz "https://github.com/boyter/scc/releases/download/v${SCC_VERSION}/scc_Linux_x86_64.tar.gz"; \
     echo "${SCC_SHA256}  scc.tar.gz" | sha256sum -c -; \
     tar -xzf scc.tar.gz; \
-    install -m 0755 scc /usr/local/bin/scc
+    install -m 0755 scc /usr/local/bin/scc; \
+    # trivy — .tar.gz (Linux-64bit); SHA256 from the cosign-signed checksums.txt
+    curl -fsSL -o trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"; \
+    echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -; \
+    tar -xzf trivy.tar.gz; \
+    install -m 0755 trivy /usr/local/bin/trivy
 
 # ---- stage 2: runtime ----
 FROM debian:bookworm-slim
@@ -75,6 +86,7 @@ COPY --from=tools /usr/local/bin/shellcheck /usr/local/bin/shellcheck
 COPY --from=tools /usr/local/bin/hadolint  /usr/local/bin/hadolint
 COPY --from=tools /usr/local/bin/gitleaks  /usr/local/bin/gitleaks
 COPY --from=tools /usr/local/bin/scc       /usr/local/bin/scc
+COPY --from=tools /usr/local/bin/trivy     /usr/local/bin/trivy
 
 # checkup itself
 COPY bin/ /opt/checkup/bin/

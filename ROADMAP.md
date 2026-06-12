@@ -255,11 +255,16 @@ overlay: DevSkim, PMD CPD, dotnet-vuln). Ranked by value/fit.
 
 **Universal (core-friendly — single static binaries, no runtime):**
 
-- **Trivy** _(highest-value add)_ — one Go binary doing SCA (dependency CVEs),
-  secret scan, IaC/misconfig, and SBOM. Crucially it scans **.NET
-  `packages.config` / `packages.lock.json` / `deps.json` WITHOUT a restore** —
-  i.e. it closes the exact `dotnet-vuln` gap that skipped on the legacy app, and does it
-  for npm/pip/go/etc. too. Static binary ⇒ belongs in `checkup-core`.
+- **Fixed — Trivy added to `checkup-core`** (the `trivy` SCA check). One Go
+  binary scanning dependency manifests/lockfiles for CVEs across ecosystems,
+  including **.NET `packages.config` WITHOUT a restore** — closing the
+  `dotnet-vuln` legacy gap, universally. Pinned + SHA256-verified against the
+  release's cosign/sigstore-signed `checksums.txt`. Residual hardening:
+  cosign-verify that signature in CI for the full chain (no cosign on the build
+  host today); bundle an offline DB for air-gapped scans (trivy downloads its DB
+  on first run, like semgrep `--config auto`). `dotnet-vuln` (overlay) now
+  overlaps trivy on modern .NET and could be retired once trivy is proven there.
+  (Scoped to `--scanners vuln` — secrets/misconfig stay with gitleaks/hadolint.)
 - **OSV-Scanner** (Google, Go binary) — lockfile CVEs, lighter than Trivy;
   alternative if Trivy's breadth is overkill.
 - **TruffleHog** — secret scanning with **live-credential verification** (would
