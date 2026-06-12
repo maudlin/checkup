@@ -137,7 +137,7 @@ TOP_PROBLEMS_MD=$(echo "$TOP_PROBLEMS" | jq -r \
     if length == 0 then
         "_No findings across any check._"
     else
-        map("- **\(.severity)** [`\(.tool)`] \(.message | safe)\n  `\(.file | normPath):\(.line // 0)`") | join("\n")
+        map("- **\(.severity)** [`\(.tool)`] \(.message | safe)" + (if (.file // "") == "" then "" else "\n  `\(.file | normPath):\(.line // 0)`" end)) | join("\n")
     end
 ')
 
@@ -230,7 +230,7 @@ PER_CHECK_MD=$(jq -s -r \
          else "" end) +
         (if (.top | length) > 0 then
             "<details><summary>Top \(.top | length) findings</summary>\n\n" +
-            (.top | map("- **\(.severity)** \(.message | safe)\n  `\(.file | normPath):\(.line // 0)`") | join("\n")) +
+            (.top | map("- **\(.severity)** \(.message | safe)" + (if (.file // "") == "" then "" else "\n  `\(.file | normPath):\(.line // 0)`" end)) | join("\n")) +
             "\n\n</details>\n"
          else "" end)
     )
