@@ -57,6 +57,16 @@ if command -v git > /dev/null 2>&1 \
     GIT_OK=true
 fi
 
+# Path from the repo root to the scan target (empty when scanning the repo root;
+# e.g. "services/api/" for a subdirectory target). `git log` reports
+# repo-root-relative paths even when run from a subdirectory, so the
+# git-forensics sections strip this prefix to stay in the same target-relative
+# namespace as the file-based scanners (gitleaks/semgrep) — otherwise the by-file
+# aggregate joins the same file under two names and the hotspot ranking is wrong.
+# Stripping with `sed "s#^${GIT_PREFIX}##"` is a no-op when GIT_PREFIX is empty. (#15)
+GIT_PREFIX=""
+[ "$GIT_OK" = true ] && GIT_PREFIX=$(git rev-parse --show-prefix 2>/dev/null)
+
 # Source roots for the git-axis checks (hotspots, change-coupling,
 # bug-fix-density) and the complexity scan. Space-separated; override via
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
@@ -1134,14 +1144,15 @@ if command -v npx > /dev/null 2>&1; then
         echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $LAST_EXIT)${NC}"
         write_failed "complexity" "ESLint produced unparseable JSON (exit $LAST_EXIT)" "$COMPLEXITY_INTENT"
     else
-        REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-
+        # Normalise to TARGET-relative paths (not repo-root), so a subdirectory
+        # target shares one path namespace with the file-based scanners and the
+        # churn × complexity join in git-hotspots (#15). pwd == $TARGET here.
         # Filter test/build paths at the JSON layer rather than via
         # --ignore-pattern. The gating ESLint config still lints these files
         # for general issues; we only exclude them from complexity *reporting*
         # because tests legitimately have higher branching (matcher paths) than
         # production code, and dist/build paths are generated.
-        ALL_FINDINGS=$(jq --arg root "$REPO_ROOT" '
+        ALL_FINDINGS=$(jq --arg root "$TARGET" '
             [ .[]
               | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
               | .filePath as $fp
@@ -1763,6 +1774,7 @@ else
     # --pretty=format: suppresses commit headers; --name-only emits the
     # changed-files list. Blank separators between commits are filtered.
     CHURN_TSV=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{
@@ -1954,6 +1966,7 @@ else
     # Per-file change count over the same 6-month window — denominator
     # for the co-change ratio.
     PER_FILE_CHANGES=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{ count = $1; $1 = ""; sub(/^ +/, ""); printf "%s\t%d\n", $0, count }')
@@ -1971,6 +1984,7 @@ else
     # 50 is generous (genuine feature commits rarely exceed ~30 files)
     # while still excluding sweeps.
     PAIR_COUNTS=$(git log --since=6.months.ago --pretty=format:'---COMMIT---' --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        | sed "s#^${GIT_PREFIX}##" \
         | awk 'BEGIN { RS="---COMMIT---\n"; FS="\n" }
                NR > 1 {
                    n = 0
@@ -2126,12 +2140,14 @@ else
     FIX_TOUCHES_TSV=$(git log --since=6.months.ago --pretty=format: --name-only \
         --grep='^fix' --grep='^Revert ' \
         -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{ count = $1; $1 = ""; sub(/^ +/, ""); printf "%s\t%d\n", $0, count }')
 
     # Total churn over the same window — denominator.
     TOTAL_CHURN_TSV=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{ count = $1; $1 = ""; sub(/^ +/, ""); printf "%s\t%d\n", $0, count }')
