@@ -96,6 +96,19 @@ Unset, checkup keeps the committed `docs/reports/checkup-report.md` convention.
 
 ---
 
+## Documentation
+
+| Doc                                                    | What                                       |
+| ------------------------------------------------------ | ------------------------------------------ |
+| [`docs/architecture.md`](docs/architecture.md)         | How it works — contract, schema, layering  |
+| [`docs/build-your-own.md`](docs/build-your-own.md)     | Run on a host, slim images, extract tools  |
+| [`docs/tools.md`](docs/tools.md)                       | Bundled tools, versions, verification      |
+| [`docs/decisions/`](docs/decisions/)                   | ADRs — _why_ it's built this way           |
+| [`ROADMAP.md`](ROADMAP.md) + [Issues](https://github.com/maudlin/checkup/issues) | What's next (milestone `v0.2.0`) |
+| [`AGENTS.md`](AGENTS.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) | Agent guidance · engagement model |
+
+---
+
 ## Entrypoints
 
 | Script                  | Purpose                                                                                                |
