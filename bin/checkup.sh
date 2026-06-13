@@ -2628,6 +2628,82 @@ else
 fi
 echo ""
 
+# 23. Documentation Presence (absence-is-signal, #51)
+# section:    docs
+# purpose:    Does the codebase have an entry point to understand it? A repo with
+#             no README/docs forces a newcomer — or an agent — to start with a
+#             comprehension pass. Tree-observable, so robust to a history-less
+#             copy (an absence here is genuine, not a provenance artefact). #51.
+# pass_means: A root README and/or a docs/ directory exists.
+# fail_means: Neither found — undocumented. Reported as warn (a focus signal,
+#             never a gate).
+print_section "Documentation Presence"
+echo "Command: detect README / docs directory in the tree"
+echo ""
+
+DOCS_INTENT=$(jq -n '{
+    purpose:    "Detect whether the codebase has any entry-point documentation (README or docs/). Absence means a newcomer or agent must start with a comprehension pass. Tree-observable, so a genuine absence (not a missing-git-history artefact).",
+    pass_means: "A root README and/or a docs/ directory is present.",
+    fail_means: "No README and no docs/ — undocumented. A focus signal, not a gate."
+}')
+
+DOC_README=$(find . -maxdepth 1 -type f -iname 'readme*' -print 2>/dev/null | head -1)
+DOC_DIR=$(find . -maxdepth 2 \( -name node_modules -o -name .git \) -prune -o -type d \( -iname docs -o -iname doc \) -print 2>/dev/null | head -1)
+if [ -n "$DOC_README" ] || [ -n "$DOC_DIR" ]; then
+    DOCS_WHAT=""
+    [ -n "$DOC_README" ] && DOCS_WHAT="README"
+    [ -n "$DOC_DIR" ] && DOCS_WHAT="${DOCS_WHAT:+$DOCS_WHAT + }docs/"
+    echo -e "${GREEN}✅ Documentation present ($DOCS_WHAT)${NC}"
+    write_parsed "docs" "pass" 0 "Documentation present ($DOCS_WHAT)" '[]' "$DOCS_INTENT"
+else
+    echo -e "${YELLOW}⚠️  No README or docs/ directory found${NC}"
+    DOCS_TOP=$(jq -n '[{code:"no-docs", severity:"warning", message:"No README or docs/ directory found — the codebase has no entry point for a newcomer or an agent; a comprehension/docs pass is the natural first move"}]')
+    write_parsed "docs" "warn" 1 "No README or docs/ directory found — undocumented entry point" "$DOCS_TOP" "$DOCS_INTENT"
+fi
+echo ""
+
+# 24. Test Presence (absence-is-signal, #51)
+# section:    test-presence
+# purpose:    Is there ANY automated test safety net at all? A broad,
+#             cross-language sweep for test FILES/dirs — deliberately HUMBLE: it
+#             detects presence, not whether tests pass or are meaningful, and
+#             "no test files detected" is NOT "definitively no tests" (an
+#             unconventional layout may be missed). Tree-observable (#51).
+#             Complements the Node-only `unit-tests` check, which skips on every
+#             other stack. Absence is high-value: an agent refactoring without a
+#             safety net must proceed with care.
+# pass_means: Test files or test directories detected (common patterns across
+#             languages).
+# fail_means: None detected — no visible automated safety net. Reported as warn.
+# notes:      Humble by design — we only assert what's observable in the tree;
+#             we never claim absence we couldn't have seen (ADR-0009 #51).
+print_section "Test Presence"
+echo "Command: cross-language sweep for test files / directories"
+echo ""
+
+TESTS_INTENT=$(jq -n '{
+    purpose:    "Detect whether ANY automated test safety net exists, across languages, by sweeping for common test file/dir patterns. Humble: detects presence (test FILES), not whether tests pass or are meaningful. Complements the Node-only unit-tests check.",
+    pass_means: "Test files or directories detected (e.g. *.test.*, *_test.*, test_*.py, *Tests.cs, tests/, __tests__/).",
+    fail_means: "No test files detected — no visible automated safety net; refactor with care. NOTE: an unconventional test layout may be missed — this asserts only what is observable in the tree."
+}')
+
+# Specific patterns (not a bare *test* glob, which would match latest.js etc.).
+TEST_HIT=$(find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .git -o -name dist -o -name build -o -name vendor -o -name .svelte-kit \) -prune -o \
+    \( -type d \( -name '__tests__' -o -name tests -o -name test -o -name spec -o -name specs \) -print \) -o \
+    \( -type f \( -name '*.test.*' -o -name '*.spec.*' -o -name '*_test.*' -o -name 'test_*.py' -o -name '*Test.java' -o -name '*Tests.cs' -o -name '*_spec.rb' -o -name '*.feature' \) -print \) \
+    2>/dev/null | head -1)
+if [ -n "$TEST_HIT" ]; then
+    echo -e "${GREEN}✅ Test files/directories detected${NC}"
+    write_parsed "test-presence" "pass" 0 "Test files or directories detected (cross-language sweep)" '[]' "$TESTS_INTENT"
+else
+    echo -e "${YELLOW}⚠️  No test files detected${NC}"
+    TESTS_MSG="No test files detected (swept common cross-language patterns) — no visible automated safety net; an agent or developer should refactor with care and consider establishing characterisation tests first"
+    [ -f package.json ] && TESTS_MSG="$TESTS_MSG. This is a Node project (package.json present) with no test files"
+    TESTS_TOP=$(jq -n --arg m "$TESTS_MSG" '[{code:"no-tests", severity:"warning", message:$m}]')
+    write_parsed "test-presence" "warn" 1 "No test files detected — no visible automated safety net" "$TESTS_TOP" "$TESTS_INTENT"
+fi
+echo ""
+
 # Overall Health Score
 print_section "Overall Health Score"
 
