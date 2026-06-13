@@ -58,14 +58,20 @@ if [ -f "$OUT_DIR/checkup-summary.json" ]; then
     HEALTH_SCORE=$(jq -r '.score // "N/A"' "$OUT_DIR/checkup-summary.json")
     MAX_SCORE=$(jq -r '.maxScore // 0' "$OUT_DIR/checkup-summary.json")
     HEALTH_PERCENTAGE=$(jq -r '.percentage // "N/A"' "$OUT_DIR/checkup-summary.json")
+    CHECKUP_MODE=$(jq -r '.mode // "tailored"' "$OUT_DIR/checkup-summary.json")
 else
     HEALTH_SCORE="N/A"
     MAX_SCORE=0
     HEALTH_PERCENTAGE="N/A"
+    CHECKUP_MODE="tailored"
 fi
 
-# Headline status derived from the percentage.
-if [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
+# Headline status. In audit mode (a repo checkup doesn't own) the run is
+# informational, not a deploy gate, so we avoid deploy-readiness language (#5).
+# tailored mode keeps the deploy-framed tiers derived from the percentage.
+if [ "$CHECKUP_MODE" = "audit" ]; then
+    HEALTH_STATUS="🔎 AUDIT (informational — not a deploy gate)"
+elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
     HEALTH_STATUS="🏆 EXCELLENT"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 80 ]; then
     HEALTH_STATUS="✅ GOOD"

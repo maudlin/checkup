@@ -72,6 +72,20 @@ GIT_PREFIX=""
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
 read -r -a SRC_ROOTS <<< "${CHECKUP_SRC_ROOTS:-src server}"
 
+# Operating mode (#5). Shapes the closing verdict's framing and exit policy:
+#   tailored (default) — a repo you own: deploy-gated, "ready to ship?",
+#                        a low score exits non-zero so it can fail your CI.
+#   audit              — a repo you don't own / due diligence: breadth over fit,
+#                        false positives acceptable, purely INFORMATIONAL —
+#                        never a CI gate (always exits 0), framed as "where does
+#                        this codebase need investment?".
+# Override with CHECKUP_MODE=audit.
+CHECKUP_MODE="${CHECKUP_MODE:-tailored}"
+case "$CHECKUP_MODE" in
+    tailored|audit) ;;
+    *) echo "⚠️  Unknown CHECKUP_MODE='$CHECKUP_MODE' — falling back to 'tailored'"; CHECKUP_MODE="tailored" ;;
+esac
+
 # lizard (pip console script) powers two multi-language checks — complexity
 # (per-function CCN, section 13) and duplication (-Eduplicate, identifier-unified
 # clone detection, section 9). Resolve it and the scan roots ONCE here so both
@@ -2622,7 +2636,7 @@ else
     PERCENTAGE=$((HEALTH_SCORE * 100 / MAX_SCORE))
 fi
 
-echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)"
+echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)  ·  Mode: $CHECKUP_MODE"
 echo ""
 
 # Save summary for health report generation
@@ -2630,13 +2644,24 @@ mkdir -p "$OUT_DIR"
 cat > "$OUT_DIR/checkup-summary.json" << SUMMARY
 {
   "timestamp": "$(date -u +"%Y-%m-%d %H:%M:%S UTC")",
+  "mode": "$CHECKUP_MODE",
   "score": $HEALTH_SCORE,
   "maxScore": $MAX_SCORE,
   "percentage": $PERCENTAGE
 }
 SUMMARY
 
-if [ "$PERCENTAGE" -ge 95 ]; then
+if [ "$CHECKUP_MODE" = "audit" ]; then
+    # Audit: a repo checkup doesn't own. Informational triage — never a CI gate,
+    # so always exit 0. The deployability % is shown for context; the
+    # maintainability / Focus Areas view is the real audit signal (#35 will give
+    # it its own headline number).
+    echo -e "${BLUE}🔎 AUDIT${NC}"
+    echo "Breadth-first scan of a repo checkup doesn't own — informational, not a deploy gate."
+    echo "See 'Focus Areas' in the report for where attention concentrates."
+    STATUS="AUDIT"
+    EXIT_CODE=0
+elif [ "$PERCENTAGE" -ge 95 ]; then
     echo -e "${GREEN}🏆 EXCELLENT${NC}"
     echo "All systems ready for deployment!"
     STATUS="EXCELLENT"
