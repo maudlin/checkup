@@ -207,9 +207,10 @@ BY_FILE_MD=$(echo "$BY_FILE" | jq -r '
 ')
 
 # Focus Areas — the "where should this team focus first?" synthesis. Fuses the
-# four per-file health axes (the Tornhill forensic trio + complexity) by file,
-# so a file that lands on MULTIPLE axes — hot × complex AND coupled AND
-# bug-dense — rises to the top. This is the report's headline view; everything
+# five per-file health axes (the Tornhill forensic trio + complexity +
+# duplication) by file, so a file that lands on MULTIPLE axes — hot × complex
+# AND coupled AND bug-dense AND duplicated — rises to the top. This is the
+# report's headline view; everything
 # else is detail. Renderer-only: works on any repo whose run produced these
 # checks (git history for the forensic axes, any complexity engine), and is
 # simply empty when none ran.
@@ -234,10 +235,11 @@ FOCUS=$(jq -s \
         elif $slug == "bug-fix-density" then {axis:"bug-fix",    weight:({"warning":2.5,"low":1}[$sev] // 1)}
         elif $slug == "change-coupling" then {axis:"coupling",   weight:({"warning":2,"low":1}[$sev] // 1)}
         elif $slug == "complexity"     then {axis:"complexity", weight:({"error":2,"high":2,"warning":1.5,"medium":1.5,"low":1,"info":0.5}[$sev] // 1)}
+        elif $slug == "duplication"    then {axis:"duplication", weight:({"high":2,"warning":1.5,"low":1}[$sev] // 1)}
         else empty end;
     def sevRank: ({"critical":0,"error":0,"high":0,"warning":1,"medium":1,"low":2,"style":2,"info":3}[.] // 3);
     [ .[]
-      | select(.slug == "git-hotspots" or .slug == "bug-fix-density" or .slug == "change-coupling" or .slug == "complexity")
+      | select(.slug == "git-hotspots" or .slug == "bug-fix-density" or .slug == "change-coupling" or .slug == "complexity" or .slug == "duplication")
       | . as $check
       | (.top // [])[]
       | select(.file != null and .file != "")
@@ -254,7 +256,7 @@ FOCUS=$(jq -s \
             group_by(.axis)
             | map({axis: .[0].axis,
                    detail: (sort_by(.severity | sevRank) | .[0].message)})
-            | sort_by({"hotspot":0,"bug-fix":1,"coupling":2,"complexity":3}[.axis] // 9)
+            | sort_by({"hotspot":0,"bug-fix":1,"coupling":2,"complexity":3,"duplication":4}[.axis] // 9)
             | map(.axis + ": " + .detail)
         )
       })
@@ -269,7 +271,7 @@ echo "$FOCUS" > "$OUT_DIR/focus.json"
 FOCUS_MD=$(echo "$FOCUS" | jq -r '
     def safe: (. // "") | tostring | gsub("\\s+"; " ") | gsub("<"; "&lt;") | gsub("\\|"; "\\\\|");
     if length == 0 then
-        "_No focus signals yet — this view needs git history (hotspots / change-coupling / bug-fix density) and/or a complexity engine. See the per-check details for why each was skipped._"
+        "_No focus signals yet — this view needs git history (hotspots / change-coupling / bug-fix density) and/or a complexity or duplication engine. See the per-check details for why each was skipped._"
     else
         (["| File | Axes | Focus | Why |",
           "| ---- | ---- | ----: | --- |"] +
@@ -366,11 +368,12 @@ Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
 
 _Where should this team focus first?_ Files ranked by how many health axes
 they land on — the Tornhill forensic trio (\`git-hotspots\` = churn × complexity,
-\`change-coupling\`, \`bug-fix-density\`) plus \`complexity\`. A file high on
-**several** axes is where risk concentrates: changed often, hard to reason
-about, entangled with its neighbours, and historically bug-prone. **Axes** is
-how many of the four it appears on; **Why** is the headline reason per axis.
-This is a focus signal, not a gate — it never blocks a build.
+\`change-coupling\`, \`bug-fix-density\`) plus \`complexity\` and \`duplication\`.
+A file high on **several** axes is where risk concentrates: changed often, hard
+to reason about, entangled with its neighbours, historically bug-prone, and
+copy-pasted (so a fix in one copy misses the others). **Axes** is how many of
+the five it appears on; **Why** is the headline reason per axis. This is a focus
+signal, not a gate — it never blocks a build.
 
 $FOCUS_MD
 

@@ -72,6 +72,31 @@ GIT_PREFIX=""
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
 read -r -a SRC_ROOTS <<< "${CHECKUP_SRC_ROOTS:-src server}"
 
+# lizard (pip console script) powers two multi-language checks — complexity
+# (per-function CCN, section 13) and duplication (-Eduplicate, identifier-unified
+# clone detection, section 9). Resolve it and the scan roots ONCE here so both
+# sections share LIZARD_BIN / SCAN_ROOTS / LIZARD_PROBE (the duplication section
+# runs first, so the resolution can't live alongside the complexity engine).
+LIZARD_BIN=""
+if command -v lizard > /dev/null 2>&1; then
+    LIZARD_BIN="lizard"
+else
+    for c in /usr/local/bin/lizard "$HOME/.local/bin/lizard"; do [ -x "$c" ] && { LIZARD_BIN="$c"; break; }; done
+fi
+
+# Source roots that actually exist on disk. Non-standard legacy layouts (a
+# multi-site ASP app) have neither src/ nor server/ — scan the whole tree then.
+SCAN_ROOTS=()
+for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && SCAN_ROOTS+=("$r"); done
+[ "${#SCAN_ROOTS[@]}" -eq 0 ] && SCAN_ROOTS=(".")
+
+# Does the tree contain any source lizard can tokenise? (`-prune` keeps the
+# probe cheap on big trees.) Gates both the lizard complexity and lizard
+# duplication tiers — distinguishes "no parseable source → skip" from
+# "source present but clean → pass".
+LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
+    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
+
 # Where checkup writes its own intermediates (raw captures, parsed JSON,
 # summary, by-file aggregate, complexity CSV, history). Defaults to the
 # scanned project's reports/ — set CHECKUP_OUT_DIR (ideally absolute) to write
@@ -768,72 +793,154 @@ fi
 fi
 echo ""
 
-# 9. Code Duplication (jscpd)
+# 9. Code Duplication (tiered engine: jscpd → lizard)
 # section:    duplication
-# purpose:    Measure copy-paste density via jscpd token comparison. Some
-#             duplication is acceptable (boilerplate, generated code); high
-#             duplication signals missed abstraction opportunities.
+# purpose:    Measure copy-paste density. Some duplication is acceptable
+#             (boilerplate, generated code); high duplication signals missed
+#             abstraction — and copy-pasted logic is where a bug gets fixed in
+#             one place and not the others. Two engines, picked by stack:
+#               1. jscpd  — Node targets: exact-token clone detection, the
+#                  better-fit tool where a package.json + npm are present.
+#               2. lizard — every other stack: -Eduplicate does identifier-
+#                  unified (type-2) clone detection across the many languages
+#                  lizard tokenises (C#, Java, Go, Python, C/C++, …), so the
+#                  signal exists on the polyglot/legacy repos checkup targets.
 # pass_means: <3% duplication. Healthy abstraction layer.
 # fail_means: ≥5% duplication. Refactor toward shared helpers — when the same
 #             pattern recurs 3+ times, the cost of extraction is usually
 #             lower than the cost of maintaining the copies.
+# notes:      Classic ASP/VBScript has no tokeniser in either engine, so .asp
+#             duplication is NOT measured — the check degrades honestly there.
 print_section "Code Duplication"
-echo "Command: npm run quality:duplicates"
-echo ""
 
-JSCPD_INTENT=$(jq -n '{
-    purpose:    "Measure copy-paste density via jscpd token comparison. High duplication signals missed abstraction opportunities.",
+DUP_INTENT=$(jq -n '{
+    purpose:    "Measure copy-paste density. jscpd (exact-token) on Node targets; lizard -Eduplicate (identifier-unified, type-2) on every other stack. High duplication signals missed abstraction and multiplies maintenance cost.",
     pass_means: "<3% duplication — healthy abstraction layer.",
-    fail_means: "≥5% duplication. Refactor toward shared helpers when the same pattern recurs 3+ times."
+    fail_means: "≥5% duplication. Refactor toward shared helpers when the same pattern recurs 3+ times. NOTE: Classic ASP/VBScript has no tokeniser in either engine, so .asp duplication is not measured."
 }')
 
-JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
-run_tool "Code Duplication" npm run quality:duplicates
-if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "duplication" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$JSCPD_INTENT"
-else
-MAX_SCORE=$((MAX_SCORE + 5))
-# Trust only a report this run produced — a stale reports/jscpd/jscpd-report.json
-# would otherwise read as a confident low-duplication pass.
-if ! is_fresh reports/jscpd/jscpd-report.json "$JSCPD_MARKER"; then
-    echo -e "${YELLOW}⚠️  jscpd scan produced no fresh report (3/5)${NC}"
-    HEALTH_SCORE=$((HEALTH_SCORE + 3))
-    write_failed "duplication" "no fresh reports/jscpd/jscpd-report.json produced this run (exit $LAST_EXIT) — stale report ignored" "$JSCPD_INTENT"
-else
-    DUPLICATION_PCT=$(jq -r '.statistics.total.percentage' reports/jscpd/jscpd-report.json)
-    DUPLICATION_INT=$(echo "$DUPLICATION_PCT" | awk '{print int($1)}')
-    DUPLICATION_LINES=$(jq -r '.statistics.total.duplicatedLines // 0' reports/jscpd/jscpd-report.json)
-
-    # Top 10 duplicate clones, file:line of the first occurrence
-    JSCPD_TOP=$(jq -c '
-        [.duplicates // [] | .[] | {
-            file: .firstFile.name,
-            line: .firstFile.start,
-            code: "clone",
-            severity: "warning",
-            message: ("Clone (" + (.lines | tostring) + " lines, " + (.tokens | tostring) + " tokens) also at " + .secondFile.name + ":" + (.secondFile.start | tostring))
-        }]
-        | sort_by(-.line)
-        | .[0:10]
-    ' reports/jscpd/jscpd-report.json)
-
-    if [ "$DUPLICATION_INT" -lt 3 ]; then
-        echo -e "${GREEN}✅ Low code duplication: ${DUPLICATION_PCT}% (5/5)${NC}"
-        HEALTH_SCORE=$((HEALTH_SCORE + 5))
-        JSCPD_STATUS="pass"
-    elif [ "$DUPLICATION_INT" -lt 5 ]; then
-        echo -e "${YELLOW}⚠️  Moderate code duplication: ${DUPLICATION_PCT}% (3/5)${NC}"
+if [ -f package.json ] && command -v npm > /dev/null 2>&1; then
+    # ---- Tier 1: jscpd (Node best-fit) ----
+    echo "Command: npm run quality:duplicates"
+    echo ""
+    JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
+    run_tool "Code Duplication" npm run quality:duplicates
+    MAX_SCORE=$((MAX_SCORE + 5))
+    # Trust only a report this run produced — a stale reports/jscpd/jscpd-report.json
+    # would otherwise read as a confident low-duplication pass.
+    if ! is_fresh reports/jscpd/jscpd-report.json "$JSCPD_MARKER"; then
+        echo -e "${YELLOW}⚠️  jscpd scan produced no fresh report (3/5)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 3))
-        echo "   Review reports/jscpd/jscpd-report.json for details"
-        JSCPD_STATUS="warn"
+        write_failed "duplication" "no fresh reports/jscpd/jscpd-report.json produced this run (exit $LAST_EXIT) — stale report ignored" "$DUP_INTENT"
     else
-        echo -e "${RED}❌ High code duplication: ${DUPLICATION_PCT}% (0/5)${NC}"
-        echo "   Review reports/jscpd/jscpd-report.json and consider refactoring"
-        JSCPD_STATUS="fail"
+        DUPLICATION_PCT=$(jq -r '.statistics.total.percentage' reports/jscpd/jscpd-report.json)
+        DUPLICATION_INT=$(echo "$DUPLICATION_PCT" | awk '{print int($1)}')
+        DUPLICATION_LINES=$(jq -r '.statistics.total.duplicatedLines // 0' reports/jscpd/jscpd-report.json)
+
+        # Top 10 duplicate clones, file:line of the first occurrence
+        JSCPD_TOP=$(jq -c '
+            [.duplicates // [] | .[] | {
+                file: .firstFile.name,
+                line: .firstFile.start,
+                code: "clone",
+                severity: "warning",
+                message: ("Clone (" + (.lines | tostring) + " lines, " + (.tokens | tostring) + " tokens) also at " + .secondFile.name + ":" + (.secondFile.start | tostring))
+            }]
+            | sort_by(-.line)
+            | .[0:10]
+        ' reports/jscpd/jscpd-report.json)
+
+        if [ "$DUPLICATION_INT" -lt 3 ]; then
+            echo -e "${GREEN}✅ Low code duplication: ${DUPLICATION_PCT}% (5/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 5))
+            JSCPD_STATUS="pass"
+        elif [ "$DUPLICATION_INT" -lt 5 ]; then
+            echo -e "${YELLOW}⚠️  Moderate code duplication: ${DUPLICATION_PCT}% (3/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 3))
+            echo "   Review reports/jscpd/jscpd-report.json for details"
+            JSCPD_STATUS="warn"
+        else
+            echo -e "${RED}❌ High code duplication: ${DUPLICATION_PCT}% (0/5)${NC}"
+            echo "   Review reports/jscpd/jscpd-report.json and consider refactoring"
+            JSCPD_STATUS="fail"
+        fi
+        write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines (jscpd)" "$JSCPD_TOP" "$DUP_INTENT"
     fi
-    write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines" "$JSCPD_TOP" "$JSCPD_INTENT"
-fi
+elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
+    # ---- Tier 2: lizard -Eduplicate (language-agnostic clone detection) ----
+    echo "Command: lizard -Eduplicate"
+    echo ""
+    MAX_SCORE=$((MAX_SCORE + 5))
+    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${SCAN_ROOTS[@]}"
+    # lizard always prints the "Duplicates" banner once it has analysed files;
+    # its absence means the invocation itself failed (bad flag, no readable
+    # source) — which must NOT be read as "0% → clean pass".
+    if ! grep -q '^Duplicates' "$LAST_RAW" 2>/dev/null; then
+        echo -e "${YELLOW}⚠️  lizard produced no duplication report (exit $LAST_EXIT)${NC}"
+        HEALTH_SCORE=$((HEALTH_SCORE + 3))
+        write_failed "duplication" "lizard -Eduplicate produced no parseable report (exit $LAST_EXIT) — invocation error, not a clean result" "$DUP_INTENT"
+    else
+        # Parse lizard's text report: each "Duplicate block:" lists the cloned
+        # locations as `file:start ~ end`; the footer gives the overall rate.
+        DUP_PARSED=$(python3 - "$LAST_RAW" "$TARGET" <<'PY' || echo '{"rate":0,"count":0,"top":[]}'
+import sys, json, re
+path, target = sys.argv[1], sys.argv[2]
+text = open(path, errors="replace").read()
+m = re.search(r"Total duplicate rate:\s*([0-9.]+)%", text)
+rate = float(m.group(1)) if m else 0.0
+idx = text.find("\nDuplicates")
+section = text[idx:] if idx >= 0 else ""
+loc_re = re.compile(r"^(.*?):(\d+)\s*~\s*(\d+)\s*$")
+pre = target.rstrip("/") + "/"
+def rel(p):
+    p = p.lstrip("./")
+    return p[len(pre):] if p.startswith(pre) else p
+findings = []
+for block in section.split("Duplicate block:")[1:]:
+    locs = []
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("^") or set(line) <= set("-="):
+            continue
+        mm = loc_re.match(line)
+        if mm:
+            locs.append((mm.group(1), int(mm.group(2)), int(mm.group(3))))
+    if not locs:
+        continue
+    f0, s0, e0 = locs[0]
+    span = e0 - s0 + 1
+    others = ", ".join(f"{rel(f)}:{s}" for f, s, _ in locs[1:]) or "elsewhere"
+    sev = "high" if span >= 80 else ("warning" if span >= 20 else "low")
+    findings.append({"file": rel(f0), "line": s0, "code": "clone",
+                     "severity": sev, "span": span,
+                     "message": f"{span}-line clone also at {others}"})
+findings.sort(key=lambda d: -d["span"])
+for f in findings:
+    del f["span"]
+print(json.dumps({"rate": rate, "count": len(findings), "top": findings[:10]}))
+PY
+)
+        DUP_RATE=$(echo "$DUP_PARSED" | jq -r '.rate')
+        DUP_RATE_INT=$(echo "$DUP_RATE" | awk '{print int($1)}')
+        DUP_COUNT=$(echo "$DUP_PARSED" | jq -r '.count')
+        DUP_TOP=$(echo "$DUP_PARSED" | jq -c '.top')
+        if [ "$DUP_RATE_INT" -lt 3 ]; then
+            echo -e "${GREEN}✅ Low code duplication: ${DUP_RATE}% (5/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 5))
+            DUP_STATUS="pass"
+        elif [ "$DUP_RATE_INT" -lt 5 ]; then
+            echo -e "${YELLOW}⚠️  Moderate code duplication: ${DUP_RATE}% ($DUP_COUNT clone blocks, 3/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 3))
+            DUP_STATUS="warn"
+        else
+            echo -e "${RED}❌ High code duplication: ${DUP_RATE}% ($DUP_COUNT clone blocks, 0/5)${NC}"
+            DUP_STATUS="fail"
+        fi
+        write_parsed "duplication" "$DUP_STATUS" "$DUP_COUNT" "${DUP_RATE}% duplicate token rate across $DUP_COUNT clone block(s) (lizard; Classic ASP not tokenised)" "$DUP_TOP" "$DUP_INTENT"
+    fi
+else
+    echo -e "${BLUE}ℹ️  Skipped — no Node target (package.json) for jscpd and no lizard-parseable source for clone detection${NC}"
+    write_skipped "duplication" "no Node target (package.json + npm) for jscpd and no lizard-parseable source for clone detection" "$DUP_INTENT"
 fi
 echo ""
 
@@ -1128,20 +1235,9 @@ else
     for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { CPLX_SCC="$c"; break; }; done
 fi
 
-# Resolve lizard (true multi-language per-function CCN; pip console script).
-CPLX_LIZARD=""
-if command -v lizard > /dev/null 2>&1; then
-    CPLX_LIZARD="lizard"
-else
-    for c in /usr/local/bin/lizard "$HOME/.local/bin/lizard"; do [ -x "$c" ] && { CPLX_LIZARD="$c"; break; }; done
-fi
-
-# Source roots that exist (shared by the lizard + scc engines). Non-standard
-# legacy layouts (a multi-site ASP app) have neither src/ nor server/ — scan
-# the whole tree then.
-CPLX_ROOTS=()
-for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && CPLX_ROOTS+=("$r"); done
-[ "${#CPLX_ROOTS[@]}" -eq 0 ] && CPLX_ROOTS=(".")
+# lizard + scan roots are resolved once near the top (shared with duplication).
+CPLX_LIZARD="$LIZARD_BIN"
+CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 
 # Engine selection — a three-tier ladder by descending accuracy:
 #   1. ESLint   — JS/TS only: AST-accurate cyclomatic AND cognitive complexity.
@@ -1154,11 +1250,9 @@ for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && CPLX_ROOTS+=("$r"); done
 #
 # Selection is an extension-count probe today; the #7 auto-detector will
 # supersede it. JS/TS present + npx → ESLint. Else any lizard-parseable source
-# + lizard → lizard. Else scc. (`-prune` keeps the probe cheap on big trees.)
+# (LIZARD_PROBE, resolved near the top) + lizard → lizard. Else scc.
 JSTS_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
     -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
-LIZARD_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules \) -prune -o \
-    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
 
 if [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&1; then
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
