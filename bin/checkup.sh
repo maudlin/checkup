@@ -90,6 +90,19 @@ SCAN_ROOTS=()
 for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && SCAN_ROOTS+=("$r"); done
 [ "${#SCAN_ROOTS[@]}" -eq 0 ] && SCAN_ROOTS=(".")
 
+# The git-forensic axes (hotspots, change-coupling, bug-fix-density) scan
+# SCAN_ROOTS — NOT the raw SRC_ROOTS — so a monorepo whose code lives under
+# non-standard top-level dirs (neither src/ nor server/) is analysed via the
+# tree fallback instead of silently matching nothing and reporting an empty
+# "pass" (#42). Analysis window is configurable; when there are no commits in
+# the window the axes degrade to skip-with-reason, never a false pass.
+FORENSIC_SINCE="${CHECKUP_FORENSIC_SINCE:-6.months.ago}"
+if [ -n "${CHECKUP_FORENSIC_SINCE:-}" ]; then
+    FORENSIC_WINDOW="since $FORENSIC_SINCE"
+else
+    FORENSIC_WINDOW="the last 6 months"
+fi
+
 # Does the tree contain any source lizard can tokenise? (`-prune` keeps the
 # probe cheap on big trees.) Gates both the lizard complexity and lizard
 # duplication tiers — distinguishes "no parseable source → skip" from
@@ -1980,11 +1993,11 @@ echo ""
 #             written by the complexity section above). Skipped if absent or
 #             if the target is not a git repo with history.
 print_section "Git Hotspots (Churn × Complexity)"
-echo "Command: git log (6-month churn) joined with $OUT_DIR/complexity-full.csv (max CCN/file)"
+echo "Command: git log ($FORENSIC_WINDOW churn) joined with $OUT_DIR/complexity-full.csv (max CCN/file)"
 echo ""
 
 HOTSPOTS_INTENT=$(jq -n '{
-    purpose:    "Cross-correlate 6-month commit churn with max CCN per file. Tornhill bug-hotspot signal — informational, never gates.",
+    purpose:    "Cross-correlate recent commit churn (configurable window, default 6 months) with max CCN per file. Tornhill bug-hotspot signal — informational, never gates.",
     pass_means: "No files in the top quintile of BOTH churn AND complexity — the dangerous diagonal is empty.",
     fail_means: "Files in the top quintile of BOTH axes — refactor candidates in score-descending priority order."
 }')
@@ -2005,7 +2018,7 @@ else
     # scoped to the same source roots ESLint covered (src/, server/).
     # --pretty=format: suppresses commit headers; --name-only emits the
     # changed-files list. Blank separators between commits are filtered.
-    CHURN_TSV=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+    CHURN_TSV=$(git log --since="$FORENSIC_SINCE" --pretty=format: --name-only -- "${SCAN_ROOTS[@]}" 2>/dev/null \
         | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
@@ -2183,7 +2196,7 @@ echo ""
 #             (i18n-types.ts, package-lock.json). All other pairs flow
 #             through so the human can interpret.
 print_section "Change Coupling"
-echo "Command: git log (6-month pair co-occurrences) — Tornhill logical-coupling signal"
+echo "Command: git log ($FORENSIC_WINDOW pair co-occurrences) — Tornhill logical-coupling signal"
 echo ""
 
 COUPLING_INTENT=$(jq -n '{
@@ -2197,7 +2210,7 @@ if [ "$GIT_OK" != true ]; then
 else
     # Per-file change count over the same 6-month window — denominator
     # for the co-change ratio.
-    PER_FILE_CHANGES=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+    PER_FILE_CHANGES=$(git log --since="$FORENSIC_SINCE" --pretty=format: --name-only -- "${SCAN_ROOTS[@]}" 2>/dev/null \
         | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
@@ -2215,7 +2228,7 @@ else
     # did one big refactor," which is noise for the coupling axis.
     # 50 is generous (genuine feature commits rarely exceed ~30 files)
     # while still excluding sweeps.
-    PAIR_COUNTS=$(git log --since=6.months.ago --pretty=format:'---COMMIT---' --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+    PAIR_COUNTS=$(git log --since="$FORENSIC_SINCE" --pretty=format:'---COMMIT---' --name-only -- "${SCAN_ROOTS[@]}" 2>/dev/null \
         | sed "s#^${GIT_PREFIX}##" \
         | awk 'BEGIN { RS="---COMMIT---\n"; FS="\n" }
                NR > 1 {
@@ -2251,10 +2264,17 @@ else
             print count, a, b
         }')
 
-    if [ -z "$PAIR_COUNTS" ]; then
+    if [ -z "$PER_FILE_CHANGES" ]; then
+        # No commits touched any file in the window/roots — "didn't look",
+        # not "all clear". Degrade honestly instead of a false pass (#42).
+        echo -e "${BLUE}ℹ️  No commits in $FORENSIC_WINDOW — change-coupling can't be computed${NC}"
+        write_skipped "change-coupling" \
+            "no commits in the analysis window ($FORENSIC_WINDOW) over the scan roots — widen via CHECKUP_FORENSIC_SINCE or set CHECKUP_SRC_ROOTS" \
+            "$COUPLING_INTENT"
+    elif [ -z "$PAIR_COUNTS" ]; then
         echo -e "${GREEN}✅ No pairs above the noise-filter threshold (≥ 3 shared commits)${NC}"
         write_parsed "change-coupling" "pass" 0 \
-            "No file pairs with ≥ 3 shared commits in the last 6 months" "[]" "$COUPLING_INTENT"
+            "No file pairs with ≥ 3 shared commits in $FORENSIC_WINDOW" "[]" "$COUPLING_INTENT"
     else
         # Build JSONL of {fileA, fileB, pairCount, changesA, changesB} and let
         # jq compute the normalised ratio + tier the pairs.
@@ -2355,11 +2375,11 @@ echo ""
 #             or `fix:`) and explicit `^Revert ` commits. Auto-generated
 #             files filtered (i18n-types.ts).
 print_section "Bug-fix Density"
-echo "Command: git log --grep='^fix' --grep='^Revert ' (6-month window)"
+echo "Command: git log --grep='^fix' --grep='^Revert ' ($FORENSIC_WINDOW)"
 echo ""
 
 BUGFIX_INTENT=$(jq -n '{
-    purpose:    "Per-file fix-touch ratio over the last 6 months. Tornhill: strongest single bug-density predictor.",
+    purpose:    "Per-file fix-touch ratio over a configurable recent window (default 6 months). Tornhill: strongest single bug-density predictor.",
     pass_means: "No files at ≥ 50% fix-touch ratio with ≥ 3 fix touches (noise filter).",
     fail_means: "Files ≥ 50% fix-touch ratio — fragile contracts, missing tests, or unstable integration. Refactor/test target."
 }')
@@ -2369,25 +2389,32 @@ if [ "$GIT_OK" != true ]; then
 else
     # Fix touches: commits matching the conventional-commit fix prefix
     # OR an explicit revert. --grep treats each pattern as OR'd.
-    FIX_TOUCHES_TSV=$(git log --since=6.months.ago --pretty=format: --name-only \
+    FIX_TOUCHES_TSV=$(git log --since="$FORENSIC_SINCE" --pretty=format: --name-only \
         --grep='^fix' --grep='^Revert ' \
-        -- "${SRC_ROOTS[@]}" 2>/dev/null \
+        -- "${SCAN_ROOTS[@]}" 2>/dev/null \
         | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{ count = $1; $1 = ""; sub(/^ +/, ""); printf "%s\t%d\n", $0, count }')
 
     # Total churn over the same window — denominator.
-    TOTAL_CHURN_TSV=$(git log --since=6.months.ago --pretty=format: --name-only -- "${SRC_ROOTS[@]}" 2>/dev/null \
+    TOTAL_CHURN_TSV=$(git log --since="$FORENSIC_SINCE" --pretty=format: --name-only -- "${SCAN_ROOTS[@]}" 2>/dev/null \
         | sed "s#^${GIT_PREFIX}##" \
         | grep -v '^$' \
         | sort | uniq -c \
         | awk '{ count = $1; $1 = ""; sub(/^ +/, ""); printf "%s\t%d\n", $0, count }')
 
-    if [ -z "$FIX_TOUCHES_TSV" ]; then
-        echo -e "${GREEN}✅ No bug-fix commits in the last 6 months${NC}"
+    if [ -z "$TOTAL_CHURN_TSV" ]; then
+        # No commits at all in the window/roots — "didn't look", not "all
+        # clear". Degrade honestly instead of a false pass (#42).
+        echo -e "${BLUE}ℹ️  No commits in $FORENSIC_WINDOW — bug-fix density can't be computed${NC}"
+        write_skipped "bug-fix-density" \
+            "no commits in the analysis window ($FORENSIC_WINDOW) over the scan roots — widen via CHECKUP_FORENSIC_SINCE or set CHECKUP_SRC_ROOTS" \
+            "$BUGFIX_INTENT"
+    elif [ -z "$FIX_TOUCHES_TSV" ]; then
+        echo -e "${GREEN}✅ No bug-fix commits in $FORENSIC_WINDOW${NC}"
         write_parsed "bug-fix-density" "pass" 0 \
-            "No bug-fix or revert commits in the last 6 months" "[]" "$BUGFIX_INTENT"
+            "No bug-fix or revert commits in $FORENSIC_WINDOW" "[]" "$BUGFIX_INTENT"
     else
         BUGFIX_JSON=$(awk -F'\t' '
             FILENAME == ARGV[1] { totalChurn[$1] = $2; next }
