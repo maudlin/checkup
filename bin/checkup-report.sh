@@ -58,21 +58,27 @@ if [ -f "$OUT_DIR/checkup-summary.json" ]; then
     HEALTH_SCORE=$(jq -r '.score // "N/A"' "$OUT_DIR/checkup-summary.json")
     MAX_SCORE=$(jq -r '.maxScore // 0' "$OUT_DIR/checkup-summary.json")
     HEALTH_PERCENTAGE=$(jq -r '.percentage // "N/A"' "$OUT_DIR/checkup-summary.json")
+    CHECKUP_MODE=$(jq -r '.mode // "tailored"' "$OUT_DIR/checkup-summary.json")
 else
     HEALTH_SCORE="N/A"
     MAX_SCORE=0
     HEALTH_PERCENTAGE="N/A"
+    CHECKUP_MODE="tailored"
 fi
 
-# Headline status derived from the percentage.
-if [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
+# Headline status — a codebase-health read, never a deploy/CI gate (ADR-0009).
+# Audit (a repo checkup doesn't own) is purely informational; tailored is framed
+# for your own codebase. The structural two-score reframe is #35.
+if [ "$CHECKUP_MODE" = "audit" ]; then
+    HEALTH_STATUS="🔎 AUDIT (informational — never a gate)"
+elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
     HEALTH_STATUS="🏆 EXCELLENT"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 80 ]; then
     HEALTH_STATUS="✅ GOOD"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 60 ]; then
     HEALTH_STATUS="⚠️  NEEDS ATTENTION"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ]; then
-    HEALTH_STATUS="❌ CRITICAL"
+    HEALTH_STATUS="❌ SIGNIFICANT ISSUES"
 else
     HEALTH_STATUS="❓ UNKNOWN"
 fi

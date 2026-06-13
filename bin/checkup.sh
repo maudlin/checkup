@@ -1,7 +1,7 @@
 #!/bin/bash
 # Application Checkup — whole-repository health, quality, security & hygiene.
 # Runs ~20 checks across code, dependencies, security, containers, CI and git
-# history; surfaces deploy-readiness, hygiene debt, and audit/DD risks.
+# history; localises codebase-health problems, hygiene debt, and audit/DD risks.
 #
 # Architecture: each check uses the run_tool / write_parsed helpers in
 # lib/run-tool.sh to emit a normalised reports/parsed/<slug>.json. The
@@ -71,6 +71,23 @@ GIT_PREFIX=""
 # bug-fix-density) and the complexity scan. Space-separated; override via
 # CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
 read -r -a SRC_ROOTS <<< "${CHECKUP_SRC_ROOTS:-src server}"
+
+# Operating mode (#5). checkup localises codebase-health problems — it is NOT a
+# deploy or CI gate (ADR-0009). Mode shapes the closing verdict's framing:
+#   tailored (default) — a repo you own and tune: the verdict is framed for your
+#                        own codebase ("where to focus next"). A low score still
+#                        exits non-zero as a quality signal you MAY wire into your
+#                        own process — not a deploy gate (#35 refines exit policy).
+#   audit              — a repo you don't own / due diligence: breadth over fit,
+#                        false positives acceptable, purely INFORMATIONAL —
+#                        always exits 0, framed as "where does this codebase need
+#                        investment?".
+# Override with CHECKUP_MODE=audit.
+CHECKUP_MODE="${CHECKUP_MODE:-tailored}"
+case "$CHECKUP_MODE" in
+    tailored|audit) ;;
+    *) echo "⚠️  Unknown CHECKUP_MODE='$CHECKUP_MODE' — falling back to 'tailored'"; CHECKUP_MODE="tailored" ;;
+esac
 
 # lizard (pip console script) powers two multi-language checks — complexity
 # (per-function CCN, section 13) and duplication (-Eduplicate, identifier-unified
@@ -168,19 +185,19 @@ MAX_SCORE=0
 
 # 1. TypeScript Type Checking
 # section:    typecheck
-# purpose:    Catch type errors before runtime — the cheapest pre-deploy gate
-#             we have. tsc covers .ts/.tsx; svelte-check covers .svelte.
+# purpose:    Catch type errors before runtime — the cheapest correctness
+#             signal we have. tsc covers .ts/.tsx; svelte-check covers .svelte.
 # pass_means: Zero compilation errors. The codebase is type-safe end-to-end.
-# fail_means: Any error blocks deploy. Fix in source (don't reach for `any`
-#             or `@ts-ignore` — those defer the problem to runtime).
+# fail_means: Any error is a correctness failure. Fix in source (don't reach for
+#             `any` or `@ts-ignore` — those defer the problem to runtime).
 print_section "TypeScript Type Checking"
 echo "Command: npm run typecheck"
 echo ""
 
 TS_INTENT=$(jq -n '{
-    purpose:    "Catch type errors before runtime — the cheapest pre-deploy gate. Wraps tsc plus any framework-specific type checker (e.g. svelte-check, vue-tsc).",
+    purpose:    "Catch type errors before runtime — the cheapest correctness signal. Wraps tsc plus any framework-specific type checker (e.g. svelte-check, vue-tsc).",
     pass_means: "Zero compilation errors. The codebase is type-safe end-to-end.",
-    fail_means: "Any error blocks deploy. Fix in source — avoid `any`/`@ts-ignore` which defer the problem to runtime."
+    fail_means: "Any error is a correctness failure. Fix in source — avoid `any`/`@ts-ignore` which defer the problem to runtime."
 }')
 
 run_tool "TypeScript Type Checking" npm run typecheck
@@ -236,7 +253,7 @@ echo ""
 #             security-sensitive code.
 # pass_means: Every test passes. The suite is the contract — if it's green,
 #             we're not regressing tracked behaviour.
-# fail_means: Any failure blocks deploy. Investigate; do not skip/comment a
+# fail_means: Any failure is a real defect. Investigate; do not skip/comment a
 #             failing test (project rule — CLAUDE.md absolute rule #7).
 print_section "Unit Tests"
 echo "Command: npm test"
@@ -245,7 +262,7 @@ echo ""
 UT_INTENT=$(jq -n '{
     purpose:    "Run the unit-test suite — primary defence against regressions in business logic and security-sensitive code.",
     pass_means: "Every test passes. The suite is the contract.",
-    fail_means: "Any failure blocks deploy. Investigate root cause; never skip or comment out a failing test."
+    fail_means: "Any failure is a real defect. Investigate root cause; never skip or comment out a failing test."
 }')
 
 run_tool "Unit Tests" npm test
@@ -501,7 +518,7 @@ echo ""
 #             Catches errors that only surface when the optimiser runs:
 #             missing imports in code-split chunks, server-bundle config drift,
 #             Vite plugin failures.
-# pass_means: Build succeeds. Artifacts can be deployed.
+# pass_means: Build succeeds — the project compiles and bundles cleanly.
 # fail_means: Build failed — investigate `npm run build` output. Common
 #             causes: missing peer dep, env-var-only-in-dev pattern, server-
 #             code accidentally imported from client.
@@ -511,7 +528,7 @@ echo ""
 
 BUILD_INTENT=$(jq -n '{
     purpose:    "Run the full production build. Catches errors that only surface when the optimiser/code-splitter runs (e.g. missing peer deps, server code imported from client).",
-    pass_means: "Build succeeds — artifacts can be deployed.",
+    pass_means: "Build succeeds — the project compiles and bundles cleanly.",
     fail_means: "Build failed. Common causes: missing peer dep, dev-only env pattern in shipped code, server import from client."
 }')
 
@@ -1822,7 +1839,7 @@ echo ""
 # section:    hadolint
 # purpose:    Lint Dockerfile for common antipatterns — bad COPY --chown,
 #             missing --no-install-recommends, ARG/ENV ordering, version-
-#             pinning gaps. Dockerfile bugs surface at deploy or runtime;
+#             pinning gaps. Dockerfile bugs surface at build or runtime;
 #             pre-merge lint catches them in source.
 # pass_means: Zero error-level findings against the production Dockerfile.
 # fail_means: Any error-level finding — investigate; warnings tolerated.
@@ -1849,7 +1866,7 @@ echo ""
 HADOLINT_INTENT=$(jq -n '{
     purpose:    "Lint Dockerfile for build/runtime antipatterns — bad COPY --chown, missing --no-install-recommends, version-pinning gaps.",
     pass_means: "Zero error-level findings.",
-    fail_means: "Any error-level finding — Dockerfile bugs typically surface at deploy or runtime; cheaper to catch pre-merge."
+    fail_means: "Any error-level finding — Dockerfile bugs typically surface at build or runtime; cheaper to catch pre-merge."
 }')
 
 MAX_SCORE=$((MAX_SCORE + 5))
@@ -2004,7 +2021,7 @@ HOTSPOTS_INTENT=$(jq -n '{
 
 # Informational only — no MAX_SCORE addition. Mirrors the complexity
 # check (section 13): we want the signal in the report without conflating
-# it with the deployability gate.
+# it with the correctness checks.
 
 if [ ! -s "$OUT_DIR/complexity-full.csv" ]; then
     echo -e "${YELLOW}⚠️  $OUT_DIR/complexity-full.csv missing — run the complexity section first${NC}"
@@ -2190,7 +2207,7 @@ echo ""
 #             threshold (≥ 3 shared commits).
 # fail_means: Pairs ≥ 80% co-change ratio — likely candidates for a shared
 #             interface, an extracted component, or a merged module. Never
-#             gates: review is a refactor decision, not a deployment block.
+#             gates: review is a refactor decision, not a blocker.
 # notes:      Filters out (a) test ↔ implementation pairs (stem match —
 #             these SHOULD co-change), (b) known auto-generated coupling
 #             (i18n-types.ts, package-lock.json). All other pairs flow
@@ -2622,7 +2639,7 @@ else
     PERCENTAGE=$((HEALTH_SCORE * 100 / MAX_SCORE))
 fi
 
-echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)"
+echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)  ·  Mode: $CHECKUP_MODE"
 echo ""
 
 # Save summary for health report generation
@@ -2630,31 +2647,44 @@ mkdir -p "$OUT_DIR"
 cat > "$OUT_DIR/checkup-summary.json" << SUMMARY
 {
   "timestamp": "$(date -u +"%Y-%m-%d %H:%M:%S UTC")",
+  "mode": "$CHECKUP_MODE",
   "score": $HEALTH_SCORE,
   "maxScore": $MAX_SCORE,
   "percentage": $PERCENTAGE
 }
 SUMMARY
 
-if [ "$PERCENTAGE" -ge 95 ]; then
+# Verdict is a codebase-health read, never a deploy/CI gate (ADR-0009). The full
+# four-pillar triage + maintainability headline is #35; this is the interim,
+# deploy-free framing. "Focus Areas" is the where-to-start signal in every tier.
+if [ "$CHECKUP_MODE" = "audit" ]; then
+    # Audit: a repo checkup doesn't own. Informational triage, always exit 0.
+    # The score is shown for context; the maintainability / Focus Areas view is
+    # the real audit signal (#35 will give it its own headline number).
+    echo -e "${BLUE}🔎 AUDIT${NC}"
+    echo "Breadth-first scan of a repo checkup doesn't own — informational, never a gate."
+    echo "See 'Focus Areas' in the report for where attention concentrates."
+    STATUS="AUDIT"
+    EXIT_CODE=0
+elif [ "$PERCENTAGE" -ge 95 ]; then
     echo -e "${GREEN}🏆 EXCELLENT${NC}"
-    echo "All systems ready for deployment!"
+    echo "Strong across the checks run — few health or maintainability concerns."
     STATUS="EXCELLENT"
     EXIT_CODE=0
 elif [ "$PERCENTAGE" -ge 80 ]; then
     echo -e "${GREEN}✅ GOOD${NC}"
-    echo "Minor issues detected. Consider fixing before deployment."
+    echo "Minor issues — see Top Problems and Focus Areas for where to start."
     STATUS="GOOD"
     EXIT_CODE=0
 elif [ "$PERCENTAGE" -ge 60 ]; then
     echo -e "${YELLOW}⚠️  NEEDS ATTENTION${NC}"
-    echo "Address issues above before deploying to production."
+    echo "Notable quality / maintainability debt — start with the Focus Areas."
     STATUS="NEEDS_ATTENTION"
     EXIT_CODE=1
 else
-    echo -e "${RED}❌ CRITICAL ISSUES${NC}"
-    echo "Do NOT deploy - fix critical issues first."
-    STATUS="CRITICAL"
+    echo -e "${RED}❌ SIGNIFICANT ISSUES${NC}"
+    echo "Substantial debt — prioritise the Focus Areas before building further."
+    STATUS="SIGNIFICANT"
     EXIT_CODE=1
 fi
 
