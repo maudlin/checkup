@@ -20,3 +20,4 @@ Format: **Context · Decision · Consequences · Status**.
 | 0006 | [Restricted contribution model](0006-restricted-contribution-model.md) | Accepted |
 | 0007 | [Human-gated merges (agents never self-merge)](0007-human-gated-merges.md) | Accepted |
 | 0008 | [Network isolation as the primary exfiltration control](0008-network-isolation.md) | Accepted |
+| 0009 | [checkup is a deterministic health localiser, not a deploy gate](0009-deterministic-health-localiser.md) | Accepted |
