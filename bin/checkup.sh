@@ -2790,21 +2790,16 @@ else
 fi
 echo ""
 
-# Overall Health Score
-print_section "Overall Health Score"
+# Overall — the headline is a pillar-derived health read produced by the
+# renderer (which has the aggregation), so the console verdict is read back from
+# overall.json AFTER rendering. Console and report therefore agree, and neither
+# leads with the legacy point-sum (#35, ADR-0009).
+print_section "Overall"
 
-# Guard against division by zero — happens if every scored section skipped
-# (e.g. clean checkout before npm install on a stripped-down dev box).
-if [ "$MAX_SCORE" -le 0 ]; then
-    PERCENTAGE=0
-else
-    PERCENTAGE=$((HEALTH_SCORE * 100 / MAX_SCORE))
-fi
-
-echo "📊 Score: $HEALTH_SCORE/$MAX_SCORE ($PERCENTAGE%)  ·  Mode: $CHECKUP_MODE"
-echo ""
-
-# Save summary for health report generation
+# Legacy point-sum: retained in checkup-summary.json for trend back-compat ONLY.
+# It is misleading as a verdict (deploy-centric; collapses to ~0% on a non-Node
+# target simply because the scored checks didn't run) — so it is no longer shown.
+if [ "$MAX_SCORE" -le 0 ]; then PERCENTAGE=0; else PERCENTAGE=$((HEALTH_SCORE * 100 / MAX_SCORE)); fi
 mkdir -p "$OUT_DIR"
 cat > "$OUT_DIR/checkup-summary.json" << SUMMARY
 {
@@ -2816,58 +2811,41 @@ cat > "$OUT_DIR/checkup-summary.json" << SUMMARY
 }
 SUMMARY
 
-# Verdict is a codebase-health read, never a deploy/CI gate (ADR-0009). The full
-# four-pillar triage + maintainability headline is #35; this is the interim,
-# deploy-free framing. "Focus Areas" is the where-to-start signal in every tier.
-if [ "$CHECKUP_MODE" = "audit" ]; then
-    # Audit: a repo checkup doesn't own. Informational triage, always exit 0.
-    # The score is shown for context; the maintainability / Focus Areas view is
-    # the real audit signal (#35 will give it its own headline number).
-    echo -e "${BLUE}🔎 AUDIT${NC}"
-    echo "Breadth-first scan of a repo checkup doesn't own — informational, never a gate."
-    echo "See 'Focus Areas' in the report for where attention concentrates."
-    STATUS="AUDIT"
-    EXIT_CODE=0
-elif [ "$PERCENTAGE" -ge 95 ]; then
-    echo -e "${GREEN}🏆 EXCELLENT${NC}"
-    echo "Strong across the checks run — few health or maintainability concerns."
-    STATUS="EXCELLENT"
-    EXIT_CODE=0
-elif [ "$PERCENTAGE" -ge 80 ]; then
-    echo -e "${GREEN}✅ GOOD${NC}"
-    echo "Minor issues — see Top Problems and Focus Areas for where to start."
-    STATUS="GOOD"
-    EXIT_CODE=0
-elif [ "$PERCENTAGE" -ge 60 ]; then
-    echo -e "${YELLOW}⚠️  NEEDS ATTENTION${NC}"
-    echo "Notable quality / maintainability debt — start with the Focus Areas."
-    STATUS="NEEDS_ATTENTION"
-    EXIT_CODE=1
-else
-    echo -e "${RED}❌ SIGNIFICANT ISSUES${NC}"
-    echo "Substantial debt — prioritise the Focus Areas before building further."
-    STATUS="SIGNIFICANT"
-    EXIT_CODE=1
+# Exit policy (ADR-0009): checkup NEVER gates on health. In tailored mode a
+# CORRECTNESS failure (typecheck / build / tests — the only "does it actually
+# work" signal) exits non-zero so a team MAY wire it into their own pipeline;
+# audit always exits 0. Maintainability / forensics / viability never affect exit.
+EXIT_CODE=0
+if [ "$CHECKUP_MODE" != "audit" ]; then
+    for c in typecheck build unit-tests; do
+        [ -f "$PARSED_DIR/$c.json" ] && [ "$(jq -r '.status // empty' "$PARSED_DIR/$c.json" 2>/dev/null)" = "fail" ] && EXIT_CODE=1
+    done
 fi
 
-# Generate committable report. An overlay (e.g. checkup-dotnet) that appends its
-# own parsed/<slug>.json after this run sets CHECKUP_SKIP_REPORT=1 so the report
-# is rendered once, downstream, with every check included.
+# Generate the report. It computes the overall read + writes overall.json. An
+# overlay (e.g. checkup-dotnet) sets CHECKUP_SKIP_REPORT=1 so the report renders
+# once downstream with every check included.
 if [ -n "${CHECKUP_SKIP_REPORT:-}" ]; then
-    echo ""
-    echo "📄 Report deferred (CHECKUP_SKIP_REPORT set) — overlay will render."
+    echo "📄 Report deferred (CHECKUP_SKIP_REPORT set) — overlay will render the overall read."
     exit "$EXIT_CODE"
 fi
-echo ""
 echo "📄 Generating report..."
 if "$SCRIPT_DIR/checkup-report.sh" > /dev/null 2>&1; then
-    if [ -n "${CHECKUP_OUT_DIR:-}" ]; then
-        echo "✅ Report saved to $OUT_DIR/checkup-report.md"
-    else
-        echo "✅ Report saved to docs/reports/checkup-report.md"
-    fi
+    [ -n "${CHECKUP_OUT_DIR:-}" ] && echo "✅ Report saved to $OUT_DIR/checkup-report.md" || echo "✅ Report saved to docs/reports/checkup-report.md"
 else
     echo "⚠️  Could not generate report"
+fi
+
+# Console verdict = the report's headline, read back so the two always agree.
+if [ -f "$OUT_DIR/overall.json" ]; then
+    echo ""
+    echo -e "${BLUE}$(jq -r '.verdict' "$OUT_DIR/overall.json")${NC}  ·  Mode: $CHECKUP_MODE"
+    jq -r '"   " + (if (.weak|length)>0 then "Needs work in: " + (.weak|join(", "))
+                    elif (.mixed|length)>0 then "Some debt in: " + (.mixed|join(", "))
+                    else "Broadly healthy across the pillars assessed" end)
+           + (if .focusMulti>0 then " · " + (.focusMulti|tostring) + " multi-axis hotspot file(s)" else "" end)' \
+        "$OUT_DIR/overall.json"
+    echo "   See the report's Health pillars + Focus Areas for detail."
 fi
 
 exit $EXIT_CODE
