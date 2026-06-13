@@ -66,22 +66,12 @@ else
     CHECKUP_MODE="tailored"
 fi
 
-# Headline status — a codebase-health read, never a deploy/CI gate (ADR-0009).
-# Audit (a repo checkup doesn't own) is purely informational; tailored is framed
-# for your own codebase. The structural two-score reframe is #35.
-if [ "$CHECKUP_MODE" = "audit" ]; then
-    HEALTH_STATUS="🔎 AUDIT (informational — never a gate)"
-elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
-    HEALTH_STATUS="🏆 EXCELLENT"
-elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 80 ]; then
-    HEALTH_STATUS="✅ GOOD"
-elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 60 ]; then
-    HEALTH_STATUS="⚠️  NEEDS ATTENTION"
-elif [ "$HEALTH_PERCENTAGE" != "N/A" ]; then
-    HEALTH_STATUS="❌ SIGNIFICANT ISSUES"
-else
-    HEALTH_STATUS="❓ UNKNOWN"
-fi
+# The headline is an OVERALL health read derived from the pillars (computed
+# below, once PILLARS exists) — NOT the legacy point-sum percentage, which is
+# misleading (it was deploy-centric, dominated by correctness, and on a non-Node
+# target collapses to ~0% simply because the scored checks didn't run). The
+# legacy score stays in checkup-summary.json for trend back-compat but is no
+# longer the headline (#35, ADR-0009).
 
 # Status counts across all parsed checks.
 PASS=$(jq -s 'map(select(.status=="pass")) | length' "${PARSED_FILES[@]}")
@@ -336,6 +326,35 @@ PILLARS=$(jq -s '
 ' "${PARSED_FILES[@]}")
 echo "$PILLARS" > "$OUT_DIR/pillars.json"
 
+# Overall health read — the first-impression triage (#35, ADR-0009). A humble
+# synthesis of the pillar bands, NOT a percentage. Maintainability is the spine;
+# the "health/risk" pillars (maintainability, safety, currency) plus Security
+# drive the verdict; correctness is shown as context (often "no data" on a
+# target you don't own, and it never gates). Audit mode just relabels the lead.
+FOCUS_MULTI=$(echo "$FOCUS" | jq '[.[] | select(.axisCount >= 2)] | length')
+OVERALL=$(echo "$PILLARS" | jq -c --arg mode "$CHECKUP_MODE" --argjson focusMulti "${FOCUS_MULTI:-0}" '
+    def disp: {"maintainability":"maintainability","safety":"safety/maturity","currency":"currency & viability","security":"security"}[.] // .;
+    def rank: {"weak":3,"mixed":2,"strong":1,"unknown":0}[.] // 0;
+    ([.health[] | select(.pillar != "correctness")] + [.security]) as $spine
+    | ($spine | map(.band | rank) | max) as $worst
+    | (if $worst==3 then "weak" elif $worst==2 then "mixed" elif $worst==1 then "strong" else "unknown" end) as $band
+    | ([$spine[] | select(.band=="weak") | (.pillar|disp)]) as $weak
+    | ([$spine[] | select(.band=="mixed") | (.pillar|disp)]) as $mixed
+    | (.health[] | select(.pillar=="correctness") | .band) as $corr
+    | {
+        band: $band,
+        verdict: ({"weak":"🔴 Significant work needed","mixed":"🟡 Some debt worth attention","strong":"🟢 Broadly healthy","unknown":"⚪ Insufficient data to assess"}[$band]),
+        weak: $weak, mixed: $mixed, correctness: $corr, focusMulti: $focusMulti, mode: $mode
+      }')
+echo "$OVERALL" > "$OUT_DIR/overall.json"
+OVERALL_VERDICT=$(echo "$OVERALL" | jq -r '.verdict')
+OVERALL_GESTALT=$(echo "$OVERALL" | jq -r '
+    ( if (.weak|length) > 0 then "Needs work in **" + (.weak|join("**, **")) + "**."
+      elif (.mixed|length) > 0 then "Some debt in **" + (.mixed|join("**, **")) + "**."
+      else "No weak or mixed pillars." end )
+    + ( if .focusMulti > 0 then " " + (.focusMulti|tostring) + " file(s) concentrate ≥2 risk axes — see Focus Areas." else "" end )
+    + ( " Correctness (context): " + ({"strong":"compiles & builds","mixed":"some issues","weak":"failing","unknown":"not assessed"}[.correctness]) + "." )')
+
 PILLARS_MD=$(echo "$PILLARS" | jq -r '
     def disp: {"maintainability":"Maintainability","safety":"Safety / maturity","currency":"Currency & viability","correctness":"Correctness"}[.] // .;
     def bandLabel: {"strong":"🟢 strong","mixed":"🟡 mixed","weak":"🔴 weak","unknown":"⚪ no data"}[.] // .;
@@ -390,13 +409,14 @@ render_report() {
     cat << EOF
 # Application Checkup Report
 
-> **Last Updated:** $(date -u +"%Y-%m-%d")
-> **Generated:** $TIMESTAMP
-> **Score:** $HEALTH_SCORE / $MAX_SCORE ($HEALTH_PERCENTAGE%) — $HEALTH_STATUS
+> **Overall: $OVERALL_VERDICT** · **Mode:** $CHECKUP_MODE · **Generated:** $TIMESTAMP
 
-The score is the sum of per-check point allocations (e.g. typecheck = 25,
-unit-tests = 30, lint = 15). Use it for trend; use the status columns
-below for triage.
+$OVERALL_GESTALT
+
+_checkup localises where a codebase needs attention — a health read, **not a
+deploy gate** ([ADR-0009](https://github.com/maudlin/checkup/blob/main/docs/decisions/0009-deterministic-health-localiser.md)). The overall read above is a humble synthesis of the
+health pillars below; it is **not** a score. (A legacy point-sum lives in
+\`reports/checkup-summary.json\` for trend continuity only.)_
 
 ## How to read this
 
@@ -425,8 +445,9 @@ Six sections, in priority order:
 high → warning / medium → low / style → info.
 
 Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
-\`reports/pillars.json\` (the pillar reading), \`reports/focus.json\` (the focus
-ranking) and \`reports/by-file.json\` (the cross-cut).
+\`reports/overall.json\` (the headline read), \`reports/pillars.json\` (the pillar
+reading), \`reports/focus.json\` (the focus ranking) and \`reports/by-file.json\`
+(the cross-cut).
 
 ## Summary
 
