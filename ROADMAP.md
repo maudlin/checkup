@@ -247,9 +247,20 @@ Windows filesystem via WSL. What it taught us:
   cross-site code-behind copies. Two false-pass traps caught while
   wiring it (wrong CPD flag → empty output; XML default-namespace → parser found
   nothing) — both now guarded (empty/non-XML output fails, never passes).
-  Remaining gaps: Classic ASP has no CPD tokeniser (so `.asp` duplication is
-  unmeasured); and CPD lives in the dotnet overlay only — a core-level
-  language-agnostic duplication tool would need a non-JVM/non-Node option.
+- **Fixed (core) — language-agnostic duplication without a JVM.** The core
+  `duplication` check is now a two-tier engine: **jscpd** on Node targets
+  (package.json + npm, the better-fit tool) → **lizard `-Eduplicate`** on every
+  other stack. lizard's duplicate extension does identifier-unified (type-2)
+  clone detection across the languages it tokenises (C#, Java, Go, Python,
+  C/C++, …) and is **already baked** in checkup-core (from the complexity work),
+  so this fills the non-Node gap at **+0 MB** — no JRE, unlike bringing PMD CPD
+  into core (spike on #34 weighed both: a JRE in core would breach ADR-0004 +
+  the #4 size budget *and* still couldn't tokenise Classic ASP). Empty/non-
+  parseable lizard output fails honestly, never a false 0%-pass. `duplication`
+  is now also a fifth **Focus Areas** axis, so a file that's both hot and
+  copy-pasted rises to the top. Remaining gap: Classic ASP/VBScript has no
+  tokeniser in *either* engine, so `.asp` duplication stays unmeasured (a
+  tokeniser-free line/simhash fallback could be a later follow-up).
 - **WSL/`/mnt` works but is slow.** drvfs (9p) makes full-tree walks sluggish;
   for a real audit, `git clone`/copy into the Linux fs first. Worked fine here
   (4MB), would bite on a large monorepo.
