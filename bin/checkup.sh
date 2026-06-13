@@ -110,6 +110,24 @@ fi
 LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
     -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
 
+# Paths excluded from BOTH lizard scans (complexity + duplication). Generated,
+# vendored, and intentionally-repetitive files otherwise dominate the signal —
+# framework migrations and test snapshots register as "clones", a single
+# minified bundle registers as hundreds of high-CCN "functions" — and crowd out
+# real findings in Focus Areas (#41). lizard's `-x` takes fnmatch globs (* spans
+# directories), applied at the scan layer. Extra globs via CHECKUP_EXCLUDE
+# (space-separated, additive); #18 will formalise cross-scanner excludes.
+LIZARD_EXCLUDES=(
+    '*/node_modules/*' '*/dist/*' '*/build/*' '*/.svelte-kit/*'
+    '*/vendor/*' '*/vendored/*' '*/third_party/*'
+    '*/migrations/*' '*/__snapshots__/*' '*/snapshots/*'
+    '*.min.js' '*.min.css' '*.bundle.js' '*.snap'
+)
+# shellcheck disable=SC2206  # word-split CHECKUP_EXCLUDE into additional globs
+[ -n "${CHECKUP_EXCLUDE:-}" ] && LIZARD_EXCLUDES+=(${CHECKUP_EXCLUDE})
+LIZARD_X_ARGS=()
+for g in "${LIZARD_EXCLUDES[@]}"; do LIZARD_X_ARGS+=(-x "$g"); done
+
 # Where checkup writes its own intermediates (raw captures, parsed JSON,
 # summary, by-file aggregate, complexity CSV, history). Defaults to the
 # scanned project's reports/ — set CHECKUP_OUT_DIR (ideally absolute) to write
@@ -881,10 +899,10 @@ if [ -f package.json ] && command -v npm > /dev/null 2>&1; then
     fi
 elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
     # ---- Tier 2: lizard -Eduplicate (language-agnostic clone detection) ----
-    echo "Command: lizard -Eduplicate"
+    echo "Command: lizard -Eduplicate (excluding generated/vendored/repetitive paths)"
     echo ""
     MAX_SCORE=$((MAX_SCORE + 5))
-    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${SCAN_ROOTS[@]}"
+    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${LIZARD_X_ARGS[@]}" "${SCAN_ROOTS[@]}"
     # lizard always prints the "Duplicates" banner once it has analysed files;
     # its absence means the invocation itself failed (bad flag, no readable
     # source) — which must NOT be read as "0% → clean pass".
@@ -1413,7 +1431,7 @@ elif [ -n "$CPLX_LIZARD" ] && [ -n "$LIZARD_PROBE" ]; then
     # --CCN 9999 forces a zero warning count so lizard exits 0 regardless of how
     # many hotspots it finds; --csv still lists every function. The columns are
     # the canonical lizard CSV (col 2 = CCN, col 7 = file) git-hotspots consumes.
-    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${CPLX_ROOTS[@]}"
+    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${LIZARD_X_ARGS[@]}" "${CPLX_ROOTS[@]}"
 
     # lizard --csv is CSV, not JSON — validate by content, not is_valid_json. The
     # extension probe already confirmed lizard-parseable source exists, so empty
