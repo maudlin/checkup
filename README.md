@@ -3,25 +3,39 @@
 [![CI](https://github.com/maudlin/checkup/actions/workflows/ci.yml/badge.svg)](https://github.com/maudlin/checkup/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A whole-repository examination of health, quality, security and hygiene** —
-code, dependencies, secrets & CVEs, containers, CI workflows, shell scripts,
-and git history. A single shell entrypoint runs ~20 checks (formatters,
-linters, type-checkers, security scanners, complexity and git-forensics tools)
-and produces both a human-readable markdown report and a machine-readable JSON
-stream suitable for LLM consumption.
+**A deterministic localiser of codebase-health problems** — it tells you (or an
+agent) *where the effort should go*, before a line of code is read. A single
+shell entrypoint runs ~20 checks across code, dependencies, security, containers,
+CI and git history, and produces a machine-readable JSON stream (primary) plus a
+human-readable markdown report (always) — two signals: an **overall health
+read** and the **biggest problems**, ranked.
 
-Two jobs, one tool:
+It is **not a deploy gate** — that's CI's job. Its value is front-loading,
+deterministically and up front, the gestalt a smart agent would otherwise spend
+tokens inferring ("this is Classic ASP", "there are no tests", "this module is
+hot, complex and bug-prone"). Cheaper, certain, reproducible, pre-token. See
+[ADR-0009](docs/decisions/0009-deterministic-health-localiser.md).
 
-1. **Track** — teams run it (locally pre-PR, or in CI) to identify and trend
-   health, quality and hygiene issues in an existing codebase.
-2. **Examine** — teams or auditors point it at a brownfield to surface
-   improvement priorities, or to flag risks in a report (e.g. tech
-   due-diligence).
+Four contexts, one job — *"here's where the health problems are,"* never *"may I
+ship?"*:
+
+1. **Prime an AI agent** — a deterministic "start here" before the expensive,
+   non-deterministic agent runs.
+2. **Team prioritisation** — find the highest-leverage fix for today's pains and
+   tomorrow's failures.
+3. **Tech due diligence** — a fast read of a product's code hygiene.
+4. **Periodic safety-net sweep** — a coarse-cadence catch of what slipped past CI.
+
+Health is read across four pillars: **maintainability** (complexity,
+duplication, coupling, hotspots), **safety/maturity** (tests, coverage,
+mutation, docs — *absence is a loud signal*), **currency & technology-viability**
+(dependency rot, EOL runtimes, dead platforms), and **correctness** (does it
+build / pass — lowest weight, often unrunnable on a target you don't own).
 
 It is **tool-agnostic and portable**: every check degrades gracefully when its
 tool is absent, and the contract documented below lets you swap the
 language-specific checks for your own stack's equivalents without touching the
-helpers, the renderer, or the report format.
+helpers, the renderer, or the report format. A grade is fine; a gate it is not.
 
 > Released under MIT (see `LICENSE`). Forks, ports, and ports-back welcome.
 
