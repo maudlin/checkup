@@ -1249,12 +1249,24 @@ CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 # that git-hotspots joins, so churn × complexity works on every stack.
 #
 # Selection is an extension-count probe today; the #7 auto-detector will
-# supersede it. JS/TS present + npx → ESLint. Else any lizard-parseable source
-# (LIZARD_PROBE, resolved near the top) + lizard → lizard. Else scc.
+# supersede it. Real Node project (root package.json) with JS/TS + npx → ESLint.
+# Else any lizard-parseable source (LIZARD_PROBE, resolved near the top) +
+# lizard → lizard. Else scc.
+#
+# The package.json gate matters: WITHOUT it, a non-Node repo that merely
+# *contains* a stray .js file would still select ESLint, which then hard-fails
+# with no flat config (exit 2) and — because the tiers are an if/elif chain —
+# never falls through to lizard/scc. That blanked complexity (and starved
+# git-hotspots, which needs the CSV) on exactly the polyglot/legacy stacks the
+# lizard tier was built for (#39). Mirrors how the duplication jscpd tier (#34)
+# is gated on a real Node project. We deliberately do NOT fall back ESLint →
+# lizard on a Node project where ESLint fails: lizard's TS parser is inferior
+# (the reason ESLint is preferred for TS at all), so a degraded silent result
+# would be worse than an honest fail telling the owner to fix their config.
 JSTS_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
     -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
 
-if [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&1; then
+if [ -f package.json ] && [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&1; then
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
     echo ""
 
