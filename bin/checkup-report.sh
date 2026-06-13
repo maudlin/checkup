@@ -290,6 +290,69 @@ FOCUS_MD=$(echo "$FOCUS" | jq -r '
     end
 ')
 
+# Health pillars (#50, ADR-0009). Map each check to one of the four HEALTH
+# pillars; the security checks go to a SEPARATE lightweight Security section (a
+# secret leak is headline-class, not a demoted pillar average). Unmapped checks
+# (shellcheck/yamllint/hadolint housekeeping; codebase-stats is a data source for
+# #52, not a band input) don't feed a pillar. Each pillar gets a HUMBLE band —
+# strong / mixed / weak / no-data — from its members' statuses, plus the evidence
+# behind it. (#51 will turn target-side absence into a finding; today a skipped
+# member is "no data", not a false pass.)
+PILLARS=$(jq -s '
+    def pillarOf:
+        {
+          "complexity":"maintainability","duplication":"maintainability","circular-deps":"maintainability",
+          "unused-code":"maintainability","git-hotspots":"maintainability","change-coupling":"maintainability",
+          "bug-fix-density":"maintainability","code-quality":"maintainability","type-aware-lint":"maintainability",
+          "unit-tests":"safety","coverage":"safety","mutation":"safety","branch-hygiene":"safety",
+          "deps-freshness":"currency",
+          "typecheck":"correctness","build":"correctness",
+          "gitleaks":"security","semgrep":"security","npm-audit":"security"
+        }[.];
+    # Humble band from member statuses (skip = no data, excluded). Representative,
+    # not worst-case: "weak" needs fails to dominate (≥2, or any fail in a small
+    # ≤2-member pillar where one failure IS the story, e.g. a broken build), so a
+    # single isolated fail among many passes reads "mixed", not "weak". Exact
+    # calibration is revisited with the headline score (#35).
+    def band:
+        map(select(. != "skip")) as $p
+        | ($p | length) as $n
+        | ([$p[] | select(. == "fail")] | length) as $f
+        | ([$p[] | select(. == "warn")] | length) as $w
+        | if   $n == 0                       then "unknown"
+          elif $f == 0 and $w == 0           then "strong"
+          elif $f >= 2 or ($f >= 1 and $n < 3) then "weak"
+          else                                    "mixed" end;
+    [ .[] | {slug, status, pillar:(.slug | pillarOf)} | select(.pillar != null) ]
+    | group_by(.pillar)
+    | map({pillar: .[0].pillar, band: ([.[].status] | band), evidence: (map({slug,status}) | sort_by(.slug))})
+    | . as $bp
+    | {
+        health: (["maintainability","safety","currency","correctness"]
+                 | map(. as $p | (($bp[] | select(.pillar==$p)) // {pillar:$p, band:"unknown", evidence:[]}))),
+        security: (($bp[] | select(.pillar=="security")) // {pillar:"security", band:"unknown", evidence:[]})
+      }
+' "${PARSED_FILES[@]}")
+echo "$PILLARS" > "$OUT_DIR/pillars.json"
+
+PILLARS_MD=$(echo "$PILLARS" | jq -r '
+    def disp: {"maintainability":"Maintainability","safety":"Safety / maturity","currency":"Currency & viability","correctness":"Correctness"}[.] // .;
+    def bandLabel: {"strong":"🟢 strong","mixed":"🟡 mixed","weak":"🔴 weak","unknown":"⚪ no data"}[.] // .;
+    def ev: (.evidence | map(select(.status != "skip"))) as $e
+        | if ($e|length)==0 then "_no signals yet_" else ($e | map(.slug + ": " + .status) | join(" · ")) end;
+    (["| Pillar | Reading | Evidence |", "| ---- | ------- | --- |"]
+     + (.health | map("| " + (.pillar|disp) + " | " + (.band|bandLabel) + " | " + ev + " |")))
+    | join("\n")
+')
+
+SECURITY_MD=$(echo "$PILLARS" | jq -r '
+    def bandLabel: {"strong":"🟢 clean","mixed":"🟡 findings","weak":"🔴 findings","unknown":"⚪ no data"}[.] // .;
+    .security
+    | (.band|bandLabel) + " — "
+      + (if (.evidence|length)==0 then "no security checks ran"
+         else (.evidence | map(.slug + ": " + .status) | join(" · ")) end)
+')
+
 # Per-check details — iterates every parsed JSON, renders intent + summary + top.
 # Same sanitisation contract as Top Problems above: collapse whitespace and
 # escape `<` on any tool-influenceable field before it lands in a <details>
@@ -336,18 +399,21 @@ below for triage.
 
 ## How to read this
 
-Five sections, in priority order:
+This is a codebase-health read, not a deploy gate (it never blocks a build).
+Six sections, in priority order:
 
 1. **Summary** — counts of pass / warn / fail / skip across every check.
-   If \`fail\` > 0 ship is blocked.
-2. **Focus Areas** — the "where should we focus first?" view. Files ranked by
+2. **Health pillars** — the overall read: a humble band per health pillar
+   (maintainability · safety/maturity · currency & viability · correctness),
+   with **Security** tracked separately. Start here for "how healthy is this?"
+3. **Focus Areas** — the "where should we focus first?" view. Files ranked by
    how many health axes they land on (hot × complex, coupled, bug-dense), with
    a one-line _why_. Start here for "where is the risk concentrated?"
-3. **Top Problems** — single cross-tool triage list, severity-sorted.
+4. **Top Problems** — single cross-tool triage list, severity-sorted.
    Start here for "what should I fix first?"
-4. **Files with most findings** — files surfaced by multiple checks;
+5. **Files with most findings** — files surfaced by multiple checks;
    statistically higher-risk for bugs.
-5. **Per-check details** — every check's status, summary, and intent
+6. **Per-check details** — every check's status, summary, and intent
    (\`purpose\`, \`pass_means\`, \`fail_means\`). Top findings collapsed
    inline.
 
@@ -358,8 +424,8 @@ Five sections, in priority order:
 high → warning / medium → low / style → info.
 
 Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
-\`reports/focus.json\` (the focus ranking) and \`reports/by-file.json\`
-(the cross-cut).
+\`reports/pillars.json\` (the pillar reading), \`reports/focus.json\` (the focus
+ranking) and \`reports/by-file.json\` (the cross-cut).
 
 ## Summary
 
@@ -369,6 +435,17 @@ Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
 | ⚠️  warn   | $WARN |
 | ❌ fail    | $FAIL |
 | ⏭️  skip   | $SKIP |
+
+## Health pillars
+
+_How healthy is this codebase?_ A humble read across the four health pillars
+(ADR-0009) — bands, not false-precision scores; the **Evidence** column is the
+checks behind each band. **Security** is tracked separately: a secret leak or
+critical CVE is headline-class, not something to average into a pillar.
+
+$PILLARS_MD
+
+**Security:** $SECURITY_MD
 
 ## Focus Areas
 
