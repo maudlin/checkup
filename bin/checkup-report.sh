@@ -66,11 +66,11 @@ else
     CHECKUP_MODE="tailored"
 fi
 
-# Headline status. In audit mode (a repo checkup doesn't own) the run is
-# informational, not a deploy gate, so we avoid deploy-readiness language (#5).
-# tailored mode keeps the deploy-framed tiers derived from the percentage.
+# Headline status — a codebase-health read, never a deploy/CI gate (ADR-0009).
+# Audit (a repo checkup doesn't own) is purely informational; tailored is framed
+# for your own codebase. The structural two-score reframe is #35.
 if [ "$CHECKUP_MODE" = "audit" ]; then
-    HEALTH_STATUS="🔎 AUDIT (informational — not a deploy gate)"
+    HEALTH_STATUS="🔎 AUDIT (informational — never a gate)"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 95 ]; then
     HEALTH_STATUS="🏆 EXCELLENT"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 80 ]; then
@@ -78,7 +78,7 @@ elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 80 ]; then
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ] && [ "$HEALTH_PERCENTAGE" -ge 60 ]; then
     HEALTH_STATUS="⚠️  NEEDS ATTENTION"
 elif [ "$HEALTH_PERCENTAGE" != "N/A" ]; then
-    HEALTH_STATUS="❌ CRITICAL"
+    HEALTH_STATUS="❌ SIGNIFICANT ISSUES"
 else
     HEALTH_STATUS="❓ UNKNOWN"
 fi
