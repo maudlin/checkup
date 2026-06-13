@@ -2704,6 +2704,92 @@ else
 fi
 echo ""
 
+# 25. Technology Viability (macro alarm, #52)
+# section:    tech-viability
+# purpose:    Is this built on a LIVING platform? The single cheapest, loudest
+#             risk signal — a dead/declining stack (Classic ASP, Flash, …) means
+#             no ecosystem, no talent pool, no one left to maintain it. checkup
+#             already detects the languages (scc); this rings the bell. Keyed off
+#             language identity alone (deterministic, pre-token, #52).
+# pass_means: No substantial share of the codebase is a known dead/declining
+#             platform.
+# fail_means: A known dead platform is a substantial share — a major viability
+#             risk (reported fail = the strongest pillar signal; declining = warn).
+# notes:      Conservative + curated: only well-established dead/declining
+#             platforms, and only when they're a meaningful share (≥5% of code
+#             or a top-3 language) so a stray legacy file doesn't false-alarm.
+print_section "Technology Viability"
+echo "Command: classify scc language breakdown against a curated viability table"
+echo ""
+
+TV_INTENT=$(jq -n '{
+    purpose:    "Flag codebases built substantially on a dead or declining platform (no ecosystem / talent pool). The cheapest, loudest macro risk signal, keyed off language identity (deterministic, before any code is read).",
+    pass_means: "No substantial share of the codebase is a known dead/declining platform.",
+    fail_means: "A known dead platform is a substantial share — a major viability risk. Declining platforms are reported as warn. Curated + conservative (≥5% of code or a top-3 language)."
+}')
+
+TV_SCC=""
+if command -v scc > /dev/null 2>&1; then TV_SCC="scc"; else
+    for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { TV_SCC="$c"; break; }; done
+fi
+if [ -z "$TV_SCC" ]; then
+    echo -e "${BLUE}ℹ️  Skipped — scc not installed (needed for the language breakdown)${NC}"
+    write_skipped "tech-viability" "scc not installed — cannot read the language breakdown" "$TV_INTENT"
+else
+    TV_JSON=$("$TV_SCC" --format json --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null)
+    if [ -z "$TV_JSON" ] || ! echo "$TV_JSON" | jq -e 'type=="array"' >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  scc produced no parseable language data${NC}"
+        write_failed "tech-viability" "scc produced no parseable JSON (exit $?) — invocation error, not a clean result" "$TV_INTENT"
+    else
+        # Curated viability table, keyed by scc language Name. Conservative: only
+        # well-established dead/declining platforms. "dead" → no living ecosystem;
+        # "declining" → shrinking ecosystem/talent. Extend deliberately.
+        TV_FINDINGS=$(echo "$TV_JSON" | jq -c '
+            def viability: {
+                "ASP":          {level:"dead",      reason:"Classic ASP/VBScript — a long-deprecated Microsoft platform: no modern ecosystem, scarce talent, no active maintenance path"},
+                "ActionScript": {level:"dead",      reason:"ActionScript/Flash — EOL since 2020; a dead runtime"},
+                "VBScript":     {level:"dead",      reason:"VBScript — deprecated and being removed from Windows; no ecosystem"},
+                "ColdFusion":   {level:"declining", reason:"ColdFusion — niche, shrinking ecosystem and talent pool"},
+                "Perl":         {level:"declining", reason:"Perl — shrinking ecosystem and talent pool for new work"},
+                "Pascal":       {level:"declining", reason:"Pascal/Delphi — legacy, niche talent pool"}
+            }[.];
+            (map(.Code) | add) as $total
+            | (if ($total // 0) == 0 then 1 else $total end) as $denom
+            | (sort_by(-.Code) | .[0:3] | map(.Name)) as $top3
+            | [ .[]
+                | . as $l
+                | ($l.Name | viability) as $v
+                | select($v != null)
+                | (($l.Code * 100 / $denom) | floor) as $pct
+                | select($pct >= 5 or ($top3 | index($l.Name) != null))
+                | {file:null, line:0,
+                   code:($v.level + "-platform"),
+                   severity:(if $v.level == "dead" then "high" else "low" end),
+                   lines:$l.Code, pct:$pct,
+                   message:($l.Name + " is ~" + ($pct|tostring) + "% of the codebase (" + ($l.Code|tostring) + " LOC) — " + $v.reason)}
+              ] | sort_by(-.lines)')
+        TV_DEAD=$(echo "$TV_FINDINGS" | jq '[.[] | select(.code=="dead-platform")] | length')
+        TV_COUNT=$(echo "$TV_FINDINGS" | jq 'length')
+        TV_TOP=$(echo "$TV_FINDINGS" | jq -c 'map(del(.lines, .pct))')
+        if [ "$TV_COUNT" -eq 0 ]; then
+            echo -e "${GREEN}✅ No dead/declining platform detected${NC}"
+            write_parsed "tech-viability" "pass" 0 "No substantial share on a known dead/declining platform" '[]' "$TV_INTENT"
+        elif [ "$TV_DEAD" -gt 0 ]; then
+            echo -e "${RED}❌ Dead platform detected${NC}"
+            echo "$TV_FINDINGS" | jq -r '.[] | "   - " + .message'
+            write_parsed "tech-viability" "fail" "$TV_COUNT" \
+                "Built substantially on a dead platform ($(echo "$TV_FINDINGS" | jq -r '[.[]|select(.code=="dead-platform")|.message|split(" — ")[0]]|join("; ")'))" \
+                "$TV_TOP" "$TV_INTENT"
+        else
+            echo -e "${YELLOW}⚠️  Declining platform detected${NC}"
+            echo "$TV_FINDINGS" | jq -r '.[] | "   - " + .message'
+            write_parsed "tech-viability" "warn" "$TV_COUNT" \
+                "Substantial share on a declining platform" "$TV_TOP" "$TV_INTENT"
+        fi
+    fi
+fi
+echo ""
+
 # Overall Health Score
 print_section "Overall Health Score"
 

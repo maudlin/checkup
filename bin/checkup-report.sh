@@ -306,7 +306,7 @@ PILLARS=$(jq -s '
           "bug-fix-density":"maintainability","code-quality":"maintainability","type-aware-lint":"maintainability",
           "unit-tests":"safety","coverage":"safety","mutation":"safety","branch-hygiene":"safety",
           "test-presence":"safety","docs":"safety",
-          "deps-freshness":"currency",
+          "deps-freshness":"currency","tech-viability":"currency",
           "typecheck":"correctness","build":"correctness",
           "gitleaks":"security","semgrep":"security","npm-audit":"security"
         }[.];
