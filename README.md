@@ -114,6 +114,47 @@ Unset, checkup keeps the committed `docs/reports/checkup-report.md` convention.
 
 ---
 
+## Priming an agent
+
+checkup's first-class use is **front-loading an AI coding agent**: run it, then
+hand the result to the agent as a _briefing_ so it starts in the right place,
+the right way — before it spends a token reading code. The agent-first artefact
+is **`reports/checkup.json`** (a single versioned bundle; see
+[architecture](docs/architecture.md#agent-first-contract--checkupjson-adr-0009)).
+
+A prompt that turns the report into safe, prioritised action:
+
+```text
+A checkup health report exists for this codebase. Start with reports/checkup.json
+— the bundled signal — before reading source:
+  • overall        — the headline health read
+  • headlineAlarms — the loudest whole-codebase risks
+  • pillars        — health by axis (maintainability / safety / currency / correctness) + security
+  • focusTop       — the highest-risk files (hot × complex × bug-prone)
+
+Use it to decide where and how to start:
+
+1. Headline alarms first, explicitly. A leaked secret → rotate & purge before
+   anything else. A dead/declining platform → flag and discuss; don't sink
+   refactor effort into a rewrite candidate. No test safety net → write
+   characterisation tests before you change behaviour.
+2. Let the safety/maturity pillar set your method. If tests are absent or weak,
+   work in small verifiable steps and add coverage as you go — don't refactor blind.
+3. Take the highest-leverage item from focusTop, open those files to confirm,
+   and propose a short plan before changing anything.
+4. Treat skipped / "no data" checks as "not assessed", not "fine" — state what
+   you couldn't determine.
+
+checkup tells you WHERE and HOW SAFELY to start; you read the code to decide WHAT to do.
+```
+
+This is a starting template — tailor it to your agent and stack. The same
+bundle drives non-agentic uses too (a human reads `checkup-report.md`; CI/trend
+consumers read the JSON). checkup is a localiser and a briefing, **not a gate**
+([ADR-0009](docs/decisions/0009-deterministic-health-localiser.md)).
+
+---
+
 ## Documentation
 
 | Doc                                                    | What                                       |
