@@ -183,6 +183,140 @@ print_section() {
 HEALTH_SCORE=0
 MAX_SCORE=0
 
+# ─── Stack detection (#7) ────────────────────────────────────────────────────
+# Compute ONCE, up front, which stacks the target is built from, then route the
+# language-sensitive engines (complexity, duplication) off that — instead of the
+# old extension probes that mis-fired when a repo merely *contained* a stray file
+# (e.g. one .ts in a Python monorepo routed complexity to ESLint, which then
+# hard-failed with no flat config). Two signals are reconciled: manifests
+# (how-to-build) and scc's language breakdown (what's worth linting); a stack
+# counts as "dominant" only at ≥5% of code or a top-3 language — the same
+# conservative convention tech-viability (#52) uses, so a stray file can't tip
+# the decision. Cross-stack checks (secrets, SAST, forensics, stats, docs,
+# test-presence, tech-viability) ALWAYS run regardless. The plan is printed for a
+# human and persisted to detection.json for an agent (NOT under parsed/, so it
+# never counts as a check). Absence of scc degrades to manifest/presence signal —
+# never a false route. A .checkup.yml override layer is a deliberate follow-up.
+print_section "Stack Detection"
+
+# scc resolves the language breakdown. Probe conventional out-of-PATH locations
+# (a user-space install) before giving up — same set the stats/viability sections use.
+SCC_BIN=""
+if command -v scc > /dev/null 2>&1; then SCC_BIN="scc"; else
+    for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { SCC_BIN="$c"; break; }; done
+fi
+
+# Does the tree contain JS/TS source at all? (Node engines are pointless without it.)
+NODE_SRC_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
+    -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
+
+# Manifest sweep (how-to-build), shallow so a monorepo's sub-packages count but a
+# vendored dependency's manifest doesn't dominate.
+DETECT_MANIFESTS=()
+probe_manifest() { find . -maxdepth 2 \( -name node_modules -o -name .git \) -prune -o -type f \( "$@" \) -print 2>/dev/null | head -1; }
+[ -n "$(probe_manifest -name package.json)" ]                                        && DETECT_MANIFESTS+=(node)
+[ -n "$(probe_manifest -name pyproject.toml -o -name setup.py -o -name requirements.txt)" ] && DETECT_MANIFESTS+=(python)
+[ -n "$(probe_manifest -name '*.csproj' -o -name '*.sln')" ]                         && DETECT_MANIFESTS+=(dotnet)
+[ -n "$(probe_manifest -name go.mod)" ]                                              && DETECT_MANIFESTS+=(go)
+[ -n "$(probe_manifest -name pom.xml -o -name build.gradle)" ]                       && DETECT_MANIFESTS+=(java)
+[ -n "$(probe_manifest -name Cargo.toml)" ]                                          && DETECT_MANIFESTS+=(rust)
+[ -n "$(probe_manifest -name composer.json)" ]                                       && DETECT_MANIFESTS+=(php)
+[ -n "$(probe_manifest -name Gemfile)" ]                                             && DETECT_MANIFESTS+=(ruby)
+manifest_has() { local s; for s in "${DETECT_MANIFESTS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
+
+# scc language breakdown → per-stack {code, top3, pct}, dominant-first. Cached to
+# raw/ so the artefact is inspectable; not consumed by the renderer.
+DETECT_STACKS_JSON="[]"
+SCC_OK=false
+if [ -n "$SCC_BIN" ]; then
+    DETECT_SCC_RAW=$("$SCC_BIN" --format json --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null || true)
+    if [ -n "$DETECT_SCC_RAW" ] && echo "$DETECT_SCC_RAW" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+        SCC_OK=true
+        echo "$DETECT_SCC_RAW" > "$RAW_DIR/scc-detect.json"
+        DETECT_STACKS_JSON=$(echo "$DETECT_SCC_RAW" | jq -c -f "$CHECKUP_HOME/lib/detect-stacks.jq")
+    fi
+fi
+
+# scc-derived primary (largest) stack + a share helper.
+SCC_PRIMARY=""
+[ "$SCC_OK" = true ] && SCC_PRIMARY=$(echo "$DETECT_STACKS_JSON" | jq -r '.[0].stack // ""')
+stack_pct() { echo "$DETECT_STACKS_JSON" | jq -r --arg s "$1" '(.[]|select(.stack==$s)|.pct)//0'; }
+
+# Is `node` a substantial stack worth the node-SPECIFIC engines (ESLint/jscpd), or
+# just a stray file? Engine routing needs SPECIFICITY (not the sensitivity the
+# ≥5%/top-3 rule gives tech-viability): in a small repo a single .ts is "top-3",
+# which is the exact mis-route #7 exists to fix. So with scc, node must be the
+# PRIMARY language or a co-primary (≥40%). Without scc, fall back to manifest
+# presence (the old behaviour) so the common Node case still works.
+NODE_DOMINANT=false
+if manifest_has node; then
+    if [ "$SCC_OK" = true ]; then
+        NODE_PCT=$(stack_pct node)
+        { [ "$SCC_PRIMARY" = "node" ] || [ "${NODE_PCT:-0}" -ge 40 ]; } && NODE_DOMINANT=true
+    else
+        NODE_DOMINANT=true
+    fi
+fi
+
+# Engine routing — descending accuracy, gated on real dominance.
+if [ "$NODE_DOMINANT" = true ] && [ -n "$NODE_SRC_PROBE" ] && command -v npx > /dev/null 2>&1; then
+    DETECT_ENGINE_COMPLEXITY="eslint"; CPLX_REASON="node is a dominant stack (+ JS/TS source + npx) → ESLint (AST-accurate cyclomatic + cognitive)"
+elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
+    DETECT_ENGINE_COMPLEXITY="lizard"; CPLX_REASON="lizard-parseable source → lizard (true per-function CCN, multi-language)"
+elif [ -n "$SCC_BIN" ]; then
+    DETECT_ENGINE_COMPLEXITY="scc"; CPLX_REASON="scc fallback (decision-keyword heuristic; the only engine covering Classic ASP)"
+else
+    DETECT_ENGINE_COMPLEXITY="none"; CPLX_REASON="no complexity engine available (need npx+ESLint, lizard, or scc)"
+fi
+if [ "$NODE_DOMINANT" = true ] && command -v npm > /dev/null 2>&1; then
+    DETECT_ENGINE_DUPLICATION="jscpd"; DUP_REASON="node is a dominant stack (+ npm) → jscpd (exact-token)"
+elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
+    DETECT_ENGINE_DUPLICATION="lizard"; DUP_REASON="lizard-parseable source → lizard -Eduplicate (identifier-unified)"
+else
+    DETECT_ENGINE_DUPLICATION="none"; DUP_REASON="no Node target for jscpd and no lizard-parseable source"
+fi
+
+# Primary stack + confidence (drives absence-is-signal framing, #51): the largest
+# scc stack that also has a manifest is a HIGH-confidence "we looked the right way
+# for this stack"; manifest-or-dominant-only is medium; neither is low. Empty when
+# scc is absent and manifests are ambiguous — stay humble.
+DETECT_PRIMARY=""; DETECT_PRIMARY_CONFIDENCE="low"
+if [ "$SCC_OK" = true ] && [ -n "$SCC_PRIMARY" ]; then
+    DETECT_PRIMARY="$SCC_PRIMARY"
+    # The largest language IS the codebase's main stack; a matching manifest
+    # confirms "we know how to build/assess it" → high. Detected but no build
+    # file (e.g. an HTML-heavy site, or a language with no manifest) → medium.
+    if manifest_has "$DETECT_PRIMARY"; then DETECT_PRIMARY_CONFIDENCE="high"; else DETECT_PRIMARY_CONFIDENCE="medium"; fi
+elif [ "${#DETECT_MANIFESTS[@]}" -eq 1 ]; then
+    DETECT_PRIMARY="${DETECT_MANIFESTS[0]}"; DETECT_PRIMARY_CONFIDENCE="low"
+fi
+
+# Persist the plan as an agent-facing artefact (sibling to focus.json/by-file.json
+# — deliberately NOT under parsed/, which the renderer counts as checks).
+jq -n \
+    --argjson stacks "$DETECT_STACKS_JSON" \
+    --argjson manifests "$(printf '%s\n' "${DETECT_MANIFESTS[@]}" | jq -R . | jq -s 'map(select(length>0))')" \
+    --arg primary "$DETECT_PRIMARY" --arg conf "$DETECT_PRIMARY_CONFIDENCE" \
+    --arg ec "$DETECT_ENGINE_COMPLEXITY" --arg ed "$DETECT_ENGINE_DUPLICATION" \
+    --arg cr "$CPLX_REASON" --arg dr "$DUP_REASON" --arg sccok "$SCC_OK" '
+    {schemaVersion:"1.0",
+     primary: (if $primary=="" then null else $primary end),
+     primaryConfidence: $conf,
+     sccBreakdownAvailable: ($sccok=="true"),
+     stacks: $stacks, manifests: $manifests,
+     engines: {complexity:{engine:$ec, reason:$cr}, duplication:{engine:$ed, reason:$dr}},
+     overridden: false}' > "$OUT_DIR/detection.json"
+
+# Print the plan (drawn from the same values → console and detection.json agree).
+DETECT_SUMMARY=$(echo "$DETECT_STACKS_JSON" | jq -r 'if length==0 then "no scc breakdown" else (map(.stack + " " + (.pct|tostring) + "%") | join(" · ")) end')
+MANIFEST_STR=""
+[ "${#DETECT_MANIFESTS[@]}" -gt 0 ] && MANIFEST_STR="  (manifests: ${DETECT_MANIFESTS[*]})"
+echo -e "${BLUE}🔎 Detected:${NC} ${DETECT_SUMMARY}${MANIFEST_STR}"
+echo -e "   Primary: ${DETECT_PRIMARY:-unknown} (${DETECT_PRIMARY_CONFIDENCE} confidence)"
+echo -e "   Complexity engine → ${DETECT_ENGINE_COMPLEXITY}  ·  Duplication engine → ${DETECT_ENGINE_DUPLICATION}"
+echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs, test-presence, tech-viability)"
+echo ""
+
 # 1. TypeScript Type Checking
 # section:    typecheck
 # purpose:    Catch type errors before runtime — the cheapest correctness
@@ -867,8 +1001,8 @@ DUP_INTENT=$(jq -n '{
     fail_means: "≥5% duplication. Refactor toward shared helpers when the same pattern recurs 3+ times. NOTE: Classic ASP/VBScript has no tokeniser in either engine, so .asp duplication is not measured."
 }')
 
-if [ -f package.json ] && command -v npm > /dev/null 2>&1; then
-    # ---- Tier 1: jscpd (Node best-fit) ----
+if [ "$DETECT_ENGINE_DUPLICATION" = "jscpd" ]; then
+    # ---- Tier 1: jscpd (Node best-fit; engine chosen by the detector, #7) ----
     echo "Command: npm run quality:duplicates"
     echo ""
     JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
@@ -914,7 +1048,7 @@ if [ -f package.json ] && command -v npm > /dev/null 2>&1; then
         fi
         write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines (jscpd)" "$JSCPD_TOP" "$DUP_INTENT"
     fi
-elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
+elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     # ---- Tier 2: lizard -Eduplicate (language-agnostic clone detection) ----
     echo "Command: lizard -Eduplicate (excluding generated/vendored/repetitive paths)"
     echo ""
@@ -987,8 +1121,8 @@ PY
         write_parsed "duplication" "$DUP_STATUS" "$DUP_COUNT" "${DUP_RATE}% duplicate token rate across $DUP_COUNT clone block(s) (lizard; Classic ASP not tokenised)" "$DUP_TOP" "$DUP_INTENT"
     fi
 else
-    echo -e "${BLUE}ℹ️  Skipped — no Node target (package.json) for jscpd and no lizard-parseable source for clone detection${NC}"
-    write_skipped "duplication" "no Node target (package.json + npm) for jscpd and no lizard-parseable source for clone detection" "$DUP_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — $DUP_REASON${NC}"
+    write_skipped "duplication" "$DUP_REASON" "$DUP_INTENT"
 fi
 echo ""
 
@@ -1275,19 +1409,7 @@ COMPLEXITY_INTENT=$(jq -n '{
     fail_means: "Any function over CCN/cognitive 30 — refactor or cover with dedicated tests. 20-29 = warning."
 }')
 
-# Resolve scc for the language-agnostic fallback (same probe as codebase-stats).
-CPLX_SCC=""
-if command -v scc > /dev/null 2>&1; then
-    CPLX_SCC="scc"
-else
-    for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { CPLX_SCC="$c"; break; }; done
-fi
-
-# lizard + scan roots are resolved once near the top (shared with duplication).
-CPLX_LIZARD="$LIZARD_BIN"
-CPLX_ROOTS=("${SCAN_ROOTS[@]}")
-
-# Engine selection — a three-tier ladder by descending accuracy:
+# Engine, scan roots and tool paths are decided ONCE by the detector (#7):
 #   1. ESLint   — JS/TS only: AST-accurate cyclomatic AND cognitive complexity.
 #   2. lizard   — true per-function CCN for the many languages it parses
 #                 (C#, Java, Go, Python, C/C++, JS/TS, …). No cognitive metric.
@@ -1296,25 +1418,18 @@ CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 # All three emit the same lizard-format Tornhill CSV (col 2 = CCN, col 7 = file)
 # that git-hotspots joins, so churn × complexity works on every stack.
 #
-# Selection is an extension-count probe today; the #7 auto-detector will
-# supersede it. Real Node project (root package.json) with JS/TS + npx → ESLint.
-# Else any lizard-parseable source (LIZARD_PROBE, resolved near the top) +
-# lizard → lizard. Else scc.
-#
-# The package.json gate matters: WITHOUT it, a non-Node repo that merely
-# *contains* a stray .js file would still select ESLint, which then hard-fails
-# with no flat config (exit 2) and — because the tiers are an if/elif chain —
-# never falls through to lizard/scc. That blanked complexity (and starved
-# git-hotspots, which needs the CSV) on exactly the polyglot/legacy stacks the
-# lizard tier was built for (#39). Mirrors how the duplication jscpd tier (#34)
-# is gated on a real Node project. We deliberately do NOT fall back ESLint →
-# lizard on a Node project where ESLint fails: lizard's TS parser is inferior
-# (the reason ESLint is preferred for TS at all), so a degraded silent result
-# would be worse than an honest fail telling the owner to fix their config.
-JSTS_PROBE=$(find "${CPLX_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
-    -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
+# The detector picks ESLint only when `node` is a DOMINANT stack (≥5%/top-3 by
+# scc, or — without scc — a real package.json), not merely present: that is what
+# stops a stray .ts in a Python monorepo from routing here and hard-failing with
+# no flat config. We deliberately do NOT fall back ESLint → lizard on a Node
+# project where ESLint fails: lizard's TS parser is inferior (the reason ESLint
+# is preferred for TS at all), so a degraded silent result would be worse than an
+# honest fail telling the owner to fix their config.
+CPLX_SCC="$SCC_BIN"
+CPLX_LIZARD="$LIZARD_BIN"
+CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 
-if [ -f package.json ] && [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&1; then
+if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
     echo ""
 
@@ -1435,7 +1550,7 @@ if [ -f package.json ] && [ -n "$JSTS_PROBE" ] && command -v npx > /dev/null 2>&
                 "$TOP_FINDINGS" "$COMPLEXITY_INTENT"
         fi
     fi
-elif [ -n "$CPLX_LIZARD" ] && [ -n "$LIZARD_PROBE" ]; then
+elif [ "$DETECT_ENGINE_COMPLEXITY" = "lizard" ]; then
     echo -e "${GREEN}✅ lizard available — true multi-language complexity${NC}"
     echo ""
 
@@ -1516,7 +1631,7 @@ elif [ -n "$CPLX_LIZARD" ] && [ -n "$LIZARD_PROBE" ]; then
                 "$TOP_FINDINGS" "$LIZARD_INTENT"
         fi
     fi
-elif [ -n "$CPLX_SCC" ]; then
+elif [ "$DETECT_ENGINE_COMPLEXITY" = "scc" ]; then
     echo -e "${GREEN}✅ scc available — language-agnostic complexity${NC}"
     echo ""
 
@@ -1578,8 +1693,8 @@ elif [ -n "$CPLX_SCC" ]; then
         fi
     fi
 else
-    echo -e "${YELLOW}⚠️  no complexity engine (need npx + ESLint for JS/TS, or scc)${NC}"
-    write_skipped "complexity" "no complexity engine available — need npx + ESLint (JS/TS) or scc (any language)" "$COMPLEXITY_INTENT"
+    echo -e "${YELLOW}⚠️  $CPLX_REASON${NC}"
+    write_skipped "complexity" "$CPLX_REASON" "$COMPLEXITY_INTENT"
 fi
 echo ""
 
@@ -2698,7 +2813,13 @@ if [ -n "$TEST_HIT" ]; then
 else
     echo -e "${YELLOW}⚠️  No test files detected${NC}"
     TESTS_MSG="No test files detected (swept common cross-language patterns) — no visible automated safety net; an agent or developer should refactor with care and consider establishing characterisation tests first"
-    [ -f package.json ] && TESTS_MSG="$TESTS_MSG. This is a Node project (package.json present) with no test files"
+    # Detector confidence (#7) raises absence-is-signal confidence (#51): only
+    # assert a confirmed gap when we know we looked the right way for the stack.
+    if [ -n "${DETECT_PRIMARY:-}" ] && [ "${DETECT_PRIMARY_CONFIDENCE:-low}" = "high" ]; then
+        TESTS_MSG="$TESTS_MSG. This is a confirmed $DETECT_PRIMARY project (manifest + dominant language) with no test files — a genuine absence, not a layout we couldn't see"
+    elif [ -n "${DETECT_PRIMARY:-}" ]; then
+        TESTS_MSG="$TESTS_MSG (detected primary stack: $DETECT_PRIMARY)"
+    fi
     TESTS_TOP=$(jq -n --arg m "$TESTS_MSG" '[{code:"no-tests", severity:"warning", message:$m}]')
     write_parsed "test-presence" "warn" 1 "No test files detected — no visible automated safety net" "$TESTS_TOP" "$TESTS_INTENT"
 fi

@@ -112,6 +112,42 @@ The two signals (ADR-0009) map directly: **overall health** = `overall` +
 `pillars.json`, `focus.json`, `by-file.json`, `parsed/<slug>.json`) remain for
 back-compat and granular access. Bump `schemaVersion` on a breaking change.
 
+### Stack detection — `detection.json` (#7)
+
+Before any check runs, checkup detects which stacks the target is built from and
+routes the language-sensitive engines (complexity, duplication) off that —
+instead of extension probes that mis-fired when a repo merely *contained* a
+stray file (one `.ts` in a Python monorepo used to route complexity to ESLint,
+which then hard-failed with no flat config). Two signals are reconciled:
+**manifests** (`package.json`, `*.csproj`, `go.mod`, `pyproject.toml`, …) for
+how-to-build, and **scc's language breakdown** for what's worth linting. A stack
+drives its own engine only when it is the **primary** language (or a co-primary
+≥40%) — never merely top-3, so a stray file can't tip the decision. The breakdown
+transform is shared (`lib/detect-stacks.jq`) so it has one source of truth and is
+unit-tested (`test/detect.test.sh`).
+
+The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
+**not** under `parsed/`, so the renderer never counts it as a check):
+
+```jsonc
+{
+  "schemaVersion": "1.0",
+  "primary": "node",                 // largest stack, or null when ambiguous
+  "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
+  "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
+  "stacks":   [ { "stack", "code", "top3", "pct" } ],
+  "manifests": [ "node", … ],
+  "engines":  { "complexity": { "engine", "reason" }, "duplication": { … } },
+  "overridden": false                // a `.checkup.yml` override layer is a follow-up
+}
+```
+
+`primaryConfidence` raises the confidence behind absence-is-signal (#51): a
+"no tests" finding is asserted as a *genuine* absence only when we know we looked
+the right way for a confirmed stack. Cross-stack checks (secrets, SAST,
+forensics, stats, docs, test-presence, tech-viability) always run regardless of
+detection.
+
 ## Design rationale
 
 **Why the dual stream (markdown + parsed JSON)?** Humans want narrative and
