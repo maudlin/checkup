@@ -84,8 +84,33 @@ are on `$PATH`.
 
 All checkup-owned output goes under `reports/` by default, or under
 `$CHECKUP_OUT_DIR` when set (so the source can be mounted read-only). The
-canonical report is `checkup-report.md`; machine-readable data is
-`parsed/*.json` + `by-file.json`.
+canonical human report is `checkup-report.md`.
+
+### Agent-first contract — `checkup.json` (ADR-0009)
+
+`reports/checkup.json` is the **primary, versioned machine artefact** — the
+entry point an agent reads first. The human report is rendered from the same
+data, so the two never drift. Shape:
+
+```jsonc
+{
+  "schemaVersion": "1.0",
+  "generated": "<utc>",
+  "mode": "tailored | audit",
+  "overall":        { "band", "verdict", "weak":[…], "mixed":[…], "correctness", "focusMulti" },
+  "headlineAlarms": [ { "slug", "severity", "count", "message", "file" } ],  // grouped, loudest first
+  "pillars":        { "health":[ { "pillar","band","evidence":[…] } ], "security": {…} },
+  "focusTop":       [ … top 10 of focus.json … ],
+  "checks":         [ { "slug","status","count","summary" } ],   // per-check index
+  "artefacts":      { "checksDir":"parsed/", "focus":"focus.json", … }  // pointers to detail
+}
+```
+
+The two signals (ADR-0009) map directly: **overall health** = `overall` +
+`pillars`; **biggest problems** = `headlineAlarms` (macro tier) + `focusTop`
+(file tier). The standalone files (`overall.json`, `macro-alarms.json`,
+`pillars.json`, `focus.json`, `by-file.json`, `parsed/<slug>.json`) remain for
+back-compat and granular access. Bump `schemaVersion` on a breaking change.
 
 ## Design rationale
 
