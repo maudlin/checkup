@@ -355,6 +355,44 @@ OVERALL_GESTALT=$(echo "$OVERALL" | jq -r '
     + ( if .focusMulti > 0 then " " + (.focusMulti|tostring) + " file(s) concentrate ≥2 risk axes — see Focus Areas." else "" end )
     + ( " Correctness (context): " + ({"strong":"compiles & builds","mixed":"some issues","weak":"failing","unknown":"not assessed"}[.correctness]) + "." )')
 
+# Headline alarms (#53) — the loudest, decision-shaping signals, floated to the
+# very top so an agent/human can't miss them. A curated set of headline-class
+# checks (dead/declining platform, no test safety net, leaked secrets) plus any
+# critical-severity finding from anywhere (e.g. a critical CVE). These are the
+# whole-codebase "woah, stop" signals; the per-file ranking stays in Focus Areas.
+MACRO=$(jq -s \
+    --arg root "$REPO_ROOT_TRIM" --arg home "$HOME_TRIM" '
+    def sevRank: ({"critical":0,"error":1,"high":1,"warning":2,"medium":2,"low":3,"style":3,"info":4}[.] // 4);
+    def normPath: (. // "") | tostring
+        | if startswith($root) then .[($root|length):] else . end
+        | if startswith($home) then "~/" + .[($home|length):] else . end;
+    (["tech-viability","test-presence","gitleaks"]) as $macroSlugs
+    | [ .[] | . as $c | (.top // [])[]
+        | select(($macroSlugs | index($c.slug) != null) or (.severity == "critical"))
+        | {slug:$c.slug, severity, message,
+           file:(if (.file // null) == null then null else (.file|normPath) end)} ]
+    # Group by source so 10 leaked secrets read as ONE "N secrets" alarm, not 10
+    # rows — headline alarms are distinct KINDS, not every instance.
+    | group_by(.slug)
+    | map( (sort_by(.severity | sevRank)) as $g
+           | {slug: $g[0].slug, severity: $g[0].severity, count: ($g|length),
+              message: $g[0].message,
+              file: (if ($g|length) == 1 then $g[0].file else null end)} )
+    | sort_by(.severity | sevRank)' "${PARSED_FILES[@]}")
+echo "$MACRO" > "$OUT_DIR/macro-alarms.json"
+
+MACRO_MD=$(echo "$MACRO" | jq -r '
+    def safe: (. // "") | tostring | gsub("\\s+"; " ") | gsub("<"; "&lt;");
+    def icon: ({"critical":"🔴","error":"🔴","high":"🔴","warning":"🟠","medium":"🟠","low":"🟡","style":"🟡","info":"⚪"}[.] // "⚪");
+    if length == 0 then
+        "_No headline alarms — no dead platform, missing test safety net, leaked secret, or critical-severity finding._"
+    else
+        map("- " + (.severity|icon) + " **[" + (.slug|safe) + "]** " + (.message|safe)
+            + (if .count > 1 then "  _(+" + ((.count-1)|tostring) + " more of this kind)_" else "" end)
+            + (if .file == null then "" else "  `" + (.file|safe) + "`" end))
+        | join("\n")
+    end')
+
 PILLARS_MD=$(echo "$PILLARS" | jq -r '
     def disp: {"maintainability":"Maintainability","safety":"Safety / maturity","currency":"Currency & viability","correctness":"Correctness"}[.] // .;
     def bandLabel: {"strong":"🟢 strong","mixed":"🟡 mixed","weak":"🔴 weak","unknown":"⚪ no data"}[.] // .;
@@ -418,23 +456,33 @@ deploy gate** ([ADR-0009](https://github.com/maudlin/checkup/blob/main/docs/deci
 health pillars below; it is **not** a score. (A legacy point-sum lives in
 \`reports/checkup-summary.json\` for trend continuity only.)_
 
+## Headline alarms
+
+The loudest, whole-codebase signals — read these first. A dead/declining
+platform, no test safety net, a leaked secret, or a critical-severity finding.
+Empty is good news.
+
+$MACRO_MD
+
 ## How to read this
 
 This is a codebase-health read, not a deploy gate (it never blocks a build).
-Six sections, in priority order:
+Seven sections, in priority order:
 
-1. **Summary** — counts of pass / warn / fail / skip across every check.
-2. **Health pillars** — the overall read: a humble band per health pillar
+1. **Headline alarms** — the loudest whole-codebase signals (dead platform, no
+   tests, leaked secret, critical finding). Read first; empty is good.
+2. **Summary** — counts of pass / warn / fail / skip across every check.
+3. **Health pillars** — the overall read: a humble band per health pillar
    (maintainability · safety/maturity · currency & viability · correctness),
    with **Security** tracked separately. Start here for "how healthy is this?"
-3. **Focus Areas** — the "where should we focus first?" view. Files ranked by
+4. **Focus Areas** — the "where should we focus first?" view. Files ranked by
    how many health axes they land on (hot × complex, coupled, bug-dense), with
    a one-line _why_. Start here for "where is the risk concentrated?"
-4. **Top Problems** — single cross-tool triage list, severity-sorted.
+5. **Top Problems** — single cross-tool triage list, severity-sorted.
    Start here for "what should I fix first?"
-5. **Files with most findings** — files surfaced by multiple checks;
+6. **Files with most findings** — files surfaced by multiple checks;
    statistically higher-risk for bugs.
-6. **Per-check details** — every check's status, summary, and intent
+7. **Per-check details** — every check's status, summary, and intent
    (\`purpose\`, \`pass_means\`, \`fail_means\`). Top findings collapsed
    inline.
 
@@ -445,7 +493,8 @@ Six sections, in priority order:
 high → warning / medium → low / style → info.
 
 Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
-\`reports/overall.json\` (the headline read), \`reports/pillars.json\` (the pillar
+\`reports/overall.json\` (the headline read), \`reports/macro-alarms.json\` (the
+headline alarms), \`reports/pillars.json\` (the pillar
 reading), \`reports/focus.json\` (the focus ranking) and \`reports/by-file.json\`
 (the cross-cut).
 
