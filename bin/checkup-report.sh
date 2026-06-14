@@ -298,7 +298,8 @@ PILLARS=$(jq -s '
           "test-presence":"safety","docs":"safety",
           "deps-freshness":"currency","tech-viability":"currency",
           "typecheck":"correctness","build":"correctness",
-          "gitleaks":"security","semgrep":"security","npm-audit":"security"
+          "gitleaks":"security","semgrep":"security","npm-audit":"security",
+          "asp-classic":"security","devskim":"security","dotnet-vuln":"security"
         }[.];
     # Humble band from member statuses (skip = no data, excluded). Representative,
     # not worst-case: "weak" needs fails to dominate (≥2, or any fail in a small
