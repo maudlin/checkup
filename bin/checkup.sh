@@ -426,8 +426,10 @@ echo ""
 #             see MEMORY.md "Codebase Gotchas".
 # pass_means: Zero findings. No nullish-coalescing slip-ups, no other type-
 #             aware rule violations.
-# fail_means: Any error blocks the gate. Warnings under 10 → mild; ≥10 →
-#             notable. Fix at source: `??` instead of `||` for nullable values.
+# fail_means: Type-aware rule errors — e.g. `||` where `??` is required (drops
+#             0/false). Fix at source: `??` instead of `||` for nullable values.
+#             Files outside the TS project service can't be assessed → skip, not
+#             a fail (a scanner limitation is not a code defect).
 print_section "Type-Aware Lint Rules"
 echo "Command: npx eslint -c eslint.config.type-aware.js"
 echo ""
@@ -435,7 +437,7 @@ echo ""
 TAL_INTENT=$(jq -n '{
     purpose:    "Type-aware ESLint pass (separate config, ~90s). Catches `||` where `??` is required and other rules needing the TypeScript project service.",
     pass_means: "Zero findings — no nullish-coalescing slip-ups or other type-aware violations.",
-    fail_means: "Any error blocks the gate. Use `??` instead of `||` for nullable values where 0/false are valid."
+    fail_means: "Type-aware rule errors — e.g. `||` where `??` is required (0/false dropped). Use `??` for nullable values. Files outside the TS project service can'\''t be assessed and are reported as a skip, not a fail."
 }')
 
 # Opt-in: only runs if the project supplies a type-aware ESLint config — a
@@ -460,10 +462,21 @@ TYPE_ERROR_COUNT=${TYPE_ERROR_COUNT:-0}
 TYPE_WARNING_COUNT=$(echo "$TYPE_LINT_SUMMARY" | sed -nE 's/.*[^0-9]([0-9]+) warnings?.*/\1/p' | head -1)
 TYPE_WARNING_COUNT=${TYPE_WARNING_COUNT:-0}
 
-# Same ESLint output shape — reuse the awk parser
-TAL_TOP_JSON=$(awk '
+# Project-service / config-artefact parse errors are a scanner limitation, not
+# a code defect: ESLint emits one `Parsing error: …` per file that sits outside
+# the TypeScript project service (config/tooling artefacts not in tsconfig, e.g.
+# eslint.config.js). Counting them as failures overstates the headline (#63), so
+# we tally them separately, strip them from top[], and degrade to skip if they
+# are the *only* output.
+TAL_INFRA_RE='[Pp]arsing error:.*(project service|TSConfig does not include|parserOptions.project|allowDefaultProject)'
+TAL_INFRA_COUNT=$(grep -cE "$TAL_INFRA_RE" "$LAST_RAW")
+TAL_INFRA_COUNT=${TAL_INFRA_COUNT:-0}
+
+# Same ESLint output shape — reuse the awk parser (skipping infra parse errors)
+TAL_TOP_JSON=$(awk -v infra="$TAL_INFRA_RE" '
     /^\// { current_file = $0; next }
     /^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+(error|warning)[[:space:]]+/ {
+        if ($0 ~ infra) next
         sub(/^[[:space:]]+/, "")
         n = split($0, parts, /[[:space:]]+/)
         pos = parts[1]; severity = parts[2]
@@ -483,31 +496,46 @@ TAL_TOP_JSON=$(awk '
         )
     ')
 
-TAL_TOTAL=$((TYPE_ERROR_COUNT + TYPE_WARNING_COUNT))
-if [ "$TYPE_ERROR_COUNT" = "0" ] && [ "$TYPE_WARNING_COUNT" = "0" ]; then
-    echo -e "${GREEN}✅ No type-aware lint issues (5/5)${NC}"
-    HEALTH_SCORE=$((HEALTH_SCORE + 5))
-    TAL_STATUS="pass"
-    TAL_SUMMARY="No type-aware lint findings"
-elif [ "$TYPE_ERROR_COUNT" = "0" ]; then
-    if [ "$TYPE_WARNING_COUNT" -lt 10 ]; then
-        echo -e "${GREEN}✅ $TYPE_WARNING_COUNT type-aware warning(s) (4/5)${NC}"
-        HEALTH_SCORE=$((HEALTH_SCORE + 4))
-    else
-        echo -e "${YELLOW}⚠️  $TYPE_WARNING_COUNT type-aware warning(s) (3/5)${NC}"
-        HEALTH_SCORE=$((HEALTH_SCORE + 3))
-    fi
-    echo "   Use ?? instead of || when 0 or false are valid values"
-    echo "   Run 'npx eslint -c eslint.config.type-aware.js' for details"
-    TAL_STATUS="warn"
-    TAL_SUMMARY="$TYPE_WARNING_COUNT warnings"
+# Real findings exclude the project-service parse errors (scanner limitation).
+TAL_REAL_ERRORS=$((TYPE_ERROR_COUNT - TAL_INFRA_COUNT))
+[ "$TAL_REAL_ERRORS" -lt 0 ] && TAL_REAL_ERRORS=0
+TAL_TOTAL=$((TAL_REAL_ERRORS + TYPE_WARNING_COUNT))
+TAL_INFRA_NOTE=""
+[ "$TAL_INFRA_COUNT" -gt 0 ] && TAL_INFRA_NOTE=" ($TAL_INFRA_COUNT file(s) outside the TS project service — not assessed)"
+
+if [ "$TAL_REAL_ERRORS" = "0" ] && [ "$TYPE_WARNING_COUNT" = "0" ] && [ "$TAL_INFRA_COUNT" -gt 0 ]; then
+    # Output was *only* project-service parse errors: the check couldn't run on
+    # those files. Honest skip, not a phantom fail (#63).
+    echo -e "${BLUE}ℹ️  Couldn't fully run — $TAL_INFRA_COUNT file(s) outside the TypeScript project service${NC}"
+    echo "   Config/tooling artefacts (e.g. eslint.config.js) not in tsconfig."
+    echo "   Add them to tsconfig 'include' or ESLint 'allowDefaultProject' to enable."
+    write_skipped "type-aware-lint" "couldn't run — $TAL_INFRA_COUNT file(s) outside the TS project service (config/tooling artefacts not in tsconfig); add to tsconfig 'include' or ESLint 'allowDefaultProject' to enable" "$TAL_INTENT"
 else
-    echo -e "${RED}❌ $TYPE_ERROR_COUNT type-aware error(s) (0/5)${NC}"
-    echo "   Run 'npx eslint -c eslint.config.type-aware.js' for details"
-    TAL_STATUS="fail"
-    TAL_SUMMARY="$TYPE_ERROR_COUNT errors, $TYPE_WARNING_COUNT warnings"
+    if [ "$TAL_REAL_ERRORS" = "0" ] && [ "$TYPE_WARNING_COUNT" = "0" ]; then
+        echo -e "${GREEN}✅ No type-aware lint issues (5/5)${NC}"
+        HEALTH_SCORE=$((HEALTH_SCORE + 5))
+        TAL_STATUS="pass"
+        TAL_SUMMARY="No type-aware lint findings"
+    elif [ "$TAL_REAL_ERRORS" = "0" ]; then
+        if [ "$TYPE_WARNING_COUNT" -lt 10 ]; then
+            echo -e "${GREEN}✅ $TYPE_WARNING_COUNT type-aware warning(s) (4/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 4))
+        else
+            echo -e "${YELLOW}⚠️  $TYPE_WARNING_COUNT type-aware warning(s) (3/5)${NC}"
+            HEALTH_SCORE=$((HEALTH_SCORE + 3))
+        fi
+        echo "   Use ?? instead of || when 0 or false are valid values"
+        echo "   Run 'npx eslint -c eslint.config.type-aware.js' for details"
+        TAL_STATUS="warn"
+        TAL_SUMMARY="$TYPE_WARNING_COUNT warnings$TAL_INFRA_NOTE"
+    else
+        echo -e "${RED}❌ $TAL_REAL_ERRORS type-aware error(s) (0/5)${NC}"
+        echo "   Run 'npx eslint -c eslint.config.type-aware.js' for details"
+        TAL_STATUS="fail"
+        TAL_SUMMARY="$TAL_REAL_ERRORS errors, $TYPE_WARNING_COUNT warnings$TAL_INFRA_NOTE"
+    fi
+    write_parsed "type-aware-lint" "$TAL_STATUS" "$TAL_TOTAL" "$TAL_SUMMARY" "$TAL_TOP_JSON" "$TAL_INTENT"
 fi
-write_parsed "type-aware-lint" "$TAL_STATUS" "$TAL_TOTAL" "$TAL_SUMMARY" "$TAL_TOP_JSON" "$TAL_INTENT"
 fi
 fi
 echo ""
