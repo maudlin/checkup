@@ -442,6 +442,42 @@ PER_CHECK_MD=$(jq -s -r \
     | join("\n---\n\n")
 ' "${PARSED_FILES[@]}")
 
+# Agent-first output contract (#54, ADR-0009). A single, VERSIONED bundle that an
+# agent reads first: the headline read + alarms + pillar bands + top focus + a
+# per-check index, with pointers to the detailed artefacts. The human report
+# below is rendered from the same data, so the two never drift. Individual files
+# (focus.json, pillars.json, …) remain for back-compat; this is the entry point.
+CHECK_INDEX=$(jq -s 'map({slug, status, count, summary}) | sort_by(.slug)' "${PARSED_FILES[@]}")
+FOCUS_TOP=$(echo "$FOCUS" | jq -c '.[0:10]')
+jq -n \
+    --arg schemaVersion "1.0" \
+    --arg generated "$TIMESTAMP" \
+    --arg mode "$CHECKUP_MODE" \
+    --argjson overall "$OVERALL" \
+    --argjson headlineAlarms "$MACRO" \
+    --argjson pillars "$PILLARS" \
+    --argjson focusTop "$FOCUS_TOP" \
+    --argjson checks "$CHECK_INDEX" \
+    '{
+        schemaVersion: $schemaVersion,
+        generated: $generated,
+        mode: $mode,
+        overall: $overall,
+        headlineAlarms: $headlineAlarms,
+        pillars: $pillars,
+        focusTop: $focusTop,
+        checks: $checks,
+        artefacts: {
+            checksDir: "parsed/",
+            focus: "focus.json",
+            byFile: "by-file.json",
+            pillars: "pillars.json",
+            overall: "overall.json",
+            macroAlarms: "macro-alarms.json",
+            report: "checkup-report.md"
+        }
+    }' > "$OUT_DIR/checkup.json"
+
 # Render the markdown — common body used for both canonical and history files.
 render_report() {
     cat << EOF
@@ -492,11 +528,12 @@ Seven sections, in priority order:
 **Severity** (top[] entries, ordered by triage weight): critical / error /
 high → warning / medium → low / style → info.
 
-Machine consumption: \`reports/parsed/<slug>.json\` per check, plus
-\`reports/overall.json\` (the headline read), \`reports/macro-alarms.json\` (the
-headline alarms), \`reports/pillars.json\` (the pillar
-reading), \`reports/focus.json\` (the focus ranking) and \`reports/by-file.json\`
-(the cross-cut).
+Machine consumption: **\`reports/checkup.json\`** is the agent-first entry point
+— a single versioned bundle (overall read + headline alarms + pillar bands + top
+focus + per-check index + artefact pointers). This report is rendered from the
+same data. The components are also available standalone: \`reports/parsed/<slug>.json\`
+per check, \`reports/overall.json\`, \`reports/macro-alarms.json\`,
+\`reports/pillars.json\`, \`reports/focus.json\`, \`reports/by-file.json\`.
 
 ## Summary
 
