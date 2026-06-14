@@ -1,0 +1,45 @@
+name: hygiene-text
+
+# Companion to the `hygiene` job in ci.yml. That job greps the committed TREE;
+# issue and PR titles/bodies are NOT part of the tree, so a banned term pasted
+# into an issue/PR description bypasses it entirely (#43). This workflow closes
+# that gap by scanning the title + body of the triggering issue/PR against the
+# BANNED_TERMS repo variable via the event payload.
+#
+# A failing check cannot unpublish an already-public issue/PR — it is a loud
+# signal to edit/redact, paired with author discipline. Output is IDs only; the
+# matched term is never echoed into the public log.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene-text:
+    name: no internal references (issue/PR text)
+    runs-on: ubuntu-latest
+    steps:
+      # Untrusted title/body is passed via env, never interpolated into the
+      # shell, to avoid script injection. grep reads the env vars; a body
+      # containing $(...) or backticks is inert.
+      - name: Scan issue/PR title and body
+        env:
+          BANNED: ${{ vars.BANNED_TERMS }}
+          TITLE: ${{ github.event.pull_request.title || github.event.issue.title }}
+          BODY: ${{ github.event.pull_request.body || github.event.issue.body }}
+          ITEM: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          if [ -z "$BANNED" ]; then
+            echo "::warning::BANNED_TERMS variable not set — issue/PR text gate is a no-op"
+            exit 0
+          fi
+          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -I -i -q -E "$BANNED"; then
+            echo "::error::internal/client reference found in the title/body of #${ITEM} — edit it to remove the term"
+            exit 1
+          fi
+          echo "no internal/client references in #${ITEM} title/body"
