@@ -161,6 +161,8 @@ export PARSED_DIR="$OUT_DIR/parsed"
 
 # shellcheck source=../lib/run-tool.sh
 source "$CHECKUP_HOME/lib/run-tool.sh"
+# shellcheck source=../lib/profile.sh
+source "$CHECKUP_HOME/lib/profile.sh"
 
 echo "🩺 Application Checkup"
 echo "===================="
@@ -315,6 +317,11 @@ echo -e "${BLUE}🔎 Detected:${NC} ${DETECT_SUMMARY}${MANIFEST_STR}"
 echo -e "   Primary: ${DETECT_PRIMARY:-unknown} (${DETECT_PRIMARY_CONFIDENCE} confidence)"
 echo -e "   Complexity engine → ${DETECT_ENGINE_COMPLEXITY}  ·  Duplication engine → ${DETECT_ENGINE_DUPLICATION}"
 echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs, test-presence, tech-viability)"
+
+# Load the command profile for the detected stack (#6): project-built checks
+# resolve their command from here. The default Node profile reproduces the
+# previous hardcoded commands exactly.
+load_profile "$DETECT_PRIMARY" "$CHECKUP_HOME"
 echo ""
 
 # 1. TypeScript Type Checking
@@ -334,7 +341,7 @@ TS_INTENT=$(jq -n '{
     fail_means: "Any error is a correctness failure. Fix in source — avoid `any`/`@ts-ignore` which defer the problem to runtime."
 }')
 
-run_tool "TypeScript Type Checking" npm run typecheck
+run_profiled TYPECHECK "TypeScript Type Checking"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "typecheck" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$TS_INTENT"
@@ -399,7 +406,7 @@ UT_INTENT=$(jq -n '{
     fail_means: "Any failure is a real defect. Investigate root cause; never skip or comment out a failing test."
 }')
 
-run_tool "Unit Tests" npm test
+run_profiled TEST "Unit Tests"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "unit-tests" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$UT_INTENT"
@@ -470,7 +477,7 @@ CQ_INTENT=$(jq -n '{
 }')
 
 # Formatting — binary outcome
-run_tool "Code Quality Format" npm run format:check
+run_profiled FORMAT "Code Quality Format"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "code-quality" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$CQ_INTENT"
@@ -488,7 +495,7 @@ fi
 # Anchor counts to the `✖ N problems (X errors, Y warnings)` summary line —
 # the pre-existing `tail -1` picked the "potentially fixable" line instead,
 # undercounting warnings when fix-suggested < total. Fixed here.
-run_tool "Code Quality Lint" npm run lint
+run_profiled LINT "Code Quality Lint"
 LINT_RAW="$LAST_RAW"
 LINT_SUMMARY=$(grep -E '^✖ [0-9]+ problems?' "$LINT_RAW" | tail -1)
 # Portable extraction (BSD grep has no -P / \K): `5 errors` → `5`.
@@ -582,7 +589,7 @@ if [ ! -f eslint.config.type-aware.js ]; then
     echo -e "${BLUE}ℹ️  Skipped (no eslint.config.type-aware.js in project root)${NC}"
     write_skipped "type-aware-lint" "no eslint.config.type-aware.js in project root — supply one to enable" "$TAL_INTENT"
 else
-run_tool "Type-Aware Lint Rules" npx eslint -c eslint.config.type-aware.js
+run_profiled TYPEAWARE "Type-Aware Lint Rules"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npx not on PATH${NC}"
     write_skipped "type-aware-lint" "Node-stack check skipped — no package.json at the target, or npx not on PATH" "$TAL_INTENT"
@@ -694,7 +701,7 @@ BUILD_INTENT=$(jq -n '{
     fail_means: "Build failed. Common causes: missing peer dep, dev-only env pattern in shipped code, server import from client."
 }')
 
-run_tool "Production Build" npm run build
+run_profiled BUILD "Production Build"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "build" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$BUILD_INTENT"
@@ -741,7 +748,7 @@ SEMGREP_INTENT=$(jq -n '{
 }')
 
 MAX_SCORE=$((MAX_SCORE + 10))
-run_tool "Security Analysis" npm run quality:security
+run_profiled SECURITY "Security Analysis"
 # By convention the npm script writes reports/semgrep-report.json (semgrep's
 # native JSON) and swallows the exit code. If that wiring is absent — a non-Node
 # repo, or a container scan with no project deps — but semgrep is on PATH, fall
@@ -816,7 +823,7 @@ AUDIT_INTENT=$(jq -n '{
     fail_means: "Any critical advisory; high = warn. Run `npm audit fix` for auto-resolvable cases."
 }')
 
-run_tool "Security Vulnerabilities" npm audit --json
+run_profiled AUDIT "Security Vulnerabilities"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "npm-audit" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$AUDIT_INTENT"
@@ -894,7 +901,7 @@ DEPS_INTENT=$(jq -n '{
     fail_means: ">10 outdated = warning zone; schedule a sweep. Critical drift (>20) makes eventual upgrades painful."
 }')
 
-run_tool "Dependency Freshness" npm outdated --json
+run_profiled OUTDATED "Dependency Freshness"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "deps-freshness" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$DEPS_INTENT"
@@ -963,7 +970,7 @@ MADGE_INTENT=$(jq -n '{
 }')
 
 MADGE_MARKER="$RAW_DIR/.circular-deps.marker"; : > "$MADGE_MARKER"
-run_tool "Circular Dependencies" npm run quality:deps
+run_profiled DEPS "Circular Dependencies"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "circular-deps" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$MADGE_INTENT"
@@ -1174,7 +1181,7 @@ KNIP_INTENT=$(jq -n '{
     fail_means: "5+ critical issues. Delete dead code or add to knips allowlist with justification."
 }')
 
-run_tool "Unused Code Detection" npm run quality:unused
+run_profiled UNUSED "Unused Code Detection"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "unused-code" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$KNIP_INTENT"
@@ -1273,7 +1280,7 @@ COVERAGE_INTENT=$(jq -n '{
 }')
 
 COV_MARKER="$RAW_DIR/.coverage.marker"; : > "$COV_MARKER"
-run_tool "Test Coverage" npm run test:coverage:report
+run_profiled COVERAGE "Test Coverage"
 if toolchain_absent; then
     echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
     write_skipped "coverage" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$COVERAGE_INTENT"
@@ -1755,7 +1762,7 @@ if [ "${MUTATION_TEST:-0}" != "1" ]; then
 else
     MAX_SCORE=$((MAX_SCORE + 10))
     echo "Running mutation tests on critical files... (this takes ~2 minutes)"
-    run_tool "Mutation Testing" npx stryker run
+    run_profiled MUTATION "Mutation Testing"
 
     if [ "$LAST_EXIT" != "0" ]; then
         echo -e "${RED}❌ Mutation testing failed (0/10)${NC}"

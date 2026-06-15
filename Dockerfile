@@ -81,6 +81,7 @@ COPY --from=tools /usr/local/bin/scc       /usr/local/bin/scc
 # checkup itself
 COPY bin/ /opt/checkup/bin/
 COPY lib/ /opt/checkup/lib/
+COPY profiles/ /opt/checkup/profiles/
 COPY docker/entrypoint.sh /opt/checkup/entrypoint.sh
 RUN chmod +x /opt/checkup/bin/*.sh /opt/checkup/entrypoint.sh
 
