@@ -30,6 +30,9 @@ jobs:
       - name: Stack-detection tests
         run: bash test/detect.test.sh
 
+      - name: Command-profile tests
+        run: bash test/profile.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest
