@@ -163,6 +163,8 @@ export PARSED_DIR="$OUT_DIR/parsed"
 source "$CHECKUP_HOME/lib/run-tool.sh"
 # shellcheck source=../lib/profile.sh
 source "$CHECKUP_HOME/lib/profile.sh"
+# shellcheck source=../lib/config.sh
+source "$CHECKUP_HOME/lib/config.sh"
 
 echo "🩺 Application Checkup"
 echo "===================="
@@ -200,6 +202,12 @@ MAX_SCORE=0
 # never counts as a check). Absence of scc degrades to manifest/presence signal —
 # never a false route. A .checkup.yml override layer is a deliberate follow-up.
 print_section "Stack Detection"
+
+# Repo-local overrides (.checkup.yml) are consulted FIRST: command overrides set
+# CHECKUP_CMD_* before the profile loads (so they win), and stack.force/suppress
+# steer the routing below. Absent file → a pure no-op.
+CHECKUP_OVERRIDDEN=false
+load_checkup_config "$TARGET/.checkup.yml"
 
 # scc resolves the language breakdown. Probe conventional out-of-PATH locations
 # (a user-space install) before giving up — same set the stats/viability sections use.
@@ -244,6 +252,25 @@ SCC_PRIMARY=""
 [ "$SCC_OK" = true ] && SCC_PRIMARY=$(echo "$DETECT_STACKS_JSON" | jq -r '.[0].stack // ""')
 stack_pct() { echo "$DETECT_STACKS_JSON" | jq -r --arg s "$1" '(.[]|select(.stack==$s)|.pct)//0'; }
 
+# .checkup.yml stack overrides (applied before routing). `suppress` drops a stack
+# from the manifest set and the scc breakdown so it can't read as dominant;
+# `force` names the primary outright (the user asserting "treat this as X").
+if [ -n "${CHECKUP_SUPPRESS_STACKS:-}" ]; then
+    DETECT_KEPT=()
+    for m in "${DETECT_MANIFESTS[@]}"; do
+        drop=false
+        for s in $CHECKUP_SUPPRESS_STACKS; do [ "$m" = "$s" ] && drop=true; done
+        $drop || DETECT_KEPT+=("$m")
+    done
+    DETECT_MANIFESTS=("${DETECT_KEPT[@]}")
+    for s in $CHECKUP_SUPPRESS_STACKS; do
+        DETECT_STACKS_JSON=$(echo "$DETECT_STACKS_JSON" | jq -c --arg s "$s" 'map(select(.stack!=$s))')
+    done
+    [ "$SCC_OK" = true ] && SCC_PRIMARY=$(echo "$DETECT_STACKS_JSON" | jq -r '.[0].stack // ""')
+fi
+FORCED_PRIMARY="${CHECKUP_FORCE_STACK:-}"
+[ -n "$FORCED_PRIMARY" ] && SCC_PRIMARY="$FORCED_PRIMARY"
+
 # Is `node` a substantial stack worth the node-SPECIFIC engines (ESLint/jscpd), or
 # just a stray file? Engine routing needs SPECIFICITY (not the sensitivity the
 # ≥5%/top-3 rule gives tech-viability): in a small repo a single .ts is "top-3",
@@ -252,7 +279,10 @@ stack_pct() { echo "$DETECT_STACKS_JSON" | jq -r --arg s "$1" '(.[]|select(.stac
 # presence (the old behaviour) so the common Node case still works.
 NODE_DOMINANT=false
 if manifest_has node; then
-    if [ "$SCC_OK" = true ]; then
+    if [ -n "$FORCED_PRIMARY" ]; then
+        # The user named the primary stack: node engines run only if that's node.
+        [ "$FORCED_PRIMARY" = "node" ] && NODE_DOMINANT=true
+    elif [ "$SCC_OK" = true ]; then
         NODE_PCT=$(stack_pct node)
         { [ "$SCC_PRIMARY" = "node" ] || [ "${NODE_PCT:-0}" -ge 40 ]; } && NODE_DOMINANT=true
     else
@@ -283,7 +313,11 @@ fi
 # for this stack"; manifest-or-dominant-only is medium; neither is low. Empty when
 # scc is absent and manifests are ambiguous — stay humble.
 DETECT_PRIMARY=""; DETECT_PRIMARY_CONFIDENCE="low"
-if [ "$SCC_OK" = true ] && [ -n "$SCC_PRIMARY" ]; then
+if [ -n "$FORCED_PRIMARY" ]; then
+    # The user asserted the stack in .checkup.yml — the strongest "we know how to
+    # look here" signal, so confidence is high (feeds #51 absence framing).
+    DETECT_PRIMARY="$FORCED_PRIMARY"; DETECT_PRIMARY_CONFIDENCE="high"
+elif [ "$SCC_OK" = true ] && [ -n "$SCC_PRIMARY" ]; then
     DETECT_PRIMARY="$SCC_PRIMARY"
     # The largest language IS the codebase's main stack; a matching manifest
     # confirms "we know how to build/assess it" → high. Detected but no build
@@ -300,14 +334,15 @@ jq -n \
     --argjson manifests "$(printf '%s\n' "${DETECT_MANIFESTS[@]}" | jq -R . | jq -s 'map(select(length>0))')" \
     --arg primary "$DETECT_PRIMARY" --arg conf "$DETECT_PRIMARY_CONFIDENCE" \
     --arg ec "$DETECT_ENGINE_COMPLEXITY" --arg ed "$DETECT_ENGINE_DUPLICATION" \
-    --arg cr "$CPLX_REASON" --arg dr "$DUP_REASON" --arg sccok "$SCC_OK" '
+    --arg cr "$CPLX_REASON" --arg dr "$DUP_REASON" --arg sccok "$SCC_OK" \
+    --arg overridden "$CHECKUP_OVERRIDDEN" '
     {schemaVersion:"1.0",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
      engines: {complexity:{engine:$ec, reason:$cr}, duplication:{engine:$ed, reason:$dr}},
-     overridden: false}' > "$OUT_DIR/detection.json"
+     overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
 # Print the plan (drawn from the same values → console and detection.json agree).
 DETECT_SUMMARY=$(echo "$DETECT_STACKS_JSON" | jq -r 'if length==0 then "no scc breakdown" else (map(.stack + " " + (.pct|tostring) + "%") | join(" · ")) end')
@@ -317,6 +352,11 @@ echo -e "${BLUE}🔎 Detected:${NC} ${DETECT_SUMMARY}${MANIFEST_STR}"
 echo -e "   Primary: ${DETECT_PRIMARY:-unknown} (${DETECT_PRIMARY_CONFIDENCE} confidence)"
 echo -e "   Complexity engine → ${DETECT_ENGINE_COMPLEXITY}  ·  Duplication engine → ${DETECT_ENGINE_DUPLICATION}"
 echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs, test-presence, tech-viability)"
+
+# Apply .checkup.yml check toggles (empties a disabled check's command so its
+# run_profiled call takes the honest skip path; enables opt-in checks) BEFORE the
+# profile loads, so a disabled (empty) command survives the profile's `=` defaults.
+apply_check_toggles
 
 # Load the command profile for the detected stack (#6): project-built checks
 # resolve their command from here. The default Node profile reproduces the
@@ -2977,6 +3017,9 @@ if [ "$CHECKUP_MODE" != "audit" ]; then
         [ -f "$PARSED_DIR/$c.json" ] && [ "$(jq -r '.status // empty' "$PARSED_DIR/$c.json" 2>/dev/null)" = "fail" ] && EXIT_CODE=1
     done
 fi
+
+# Give .checkup.yml-disabled checks an honest "disabled" reason before rendering.
+mark_disabled_skips "$PARSED_DIR"
 
 # Generate the report. It computes the overall read + writes overall.json. An
 # overlay (e.g. checkup-dotnet) sets CHECKUP_SKIP_REPORT=1 so the report renders

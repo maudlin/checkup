@@ -33,6 +33,9 @@ jobs:
       - name: Command-profile tests
         run: bash test/profile.test.sh
 
+      - name: Config-override tests
+        run: bash test/config.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest
