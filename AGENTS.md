@@ -11,7 +11,10 @@ renderer. The bundled tools and images are a curated default, not the point.
 ## If you are using checkup on a project
 
 - **Adapt it freely.** Copy or fork it; enable/disable checks, change thresholds,
-  swap tools, rewrite checks to fit the target. That is the intended use.
+  swap tools, rewrite checks to fit the target. That is the intended use. For the
+  no-install path — override the detected stack, swap the per-check commands, or
+  disable checks — copy [`.checkup.yml.example`](.checkup.yml.example) to
+  `.checkup.yml` and prune.
 - **Keep your changes in your copy — do not send them back here.** This is a
   generic template, maintained privately; project-specific tailoring lives in
   _your_ repo (a `.checkup.yml`), not upstream. External submissions are not

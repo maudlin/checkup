@@ -1,0 +1,59 @@
+# .checkup.yml — repo-local overrides (the agent-tailoring seam).
+#
+# checkup auto-detects your stack and picks sensible default commands. This file
+# is where you override those deliberately. Adopting checkup on a repo you own is
+# "copy this to .checkup.yml and prune to taste"; on a repo you DON'T own (a
+# due-diligence audit) you usually run with NO .checkup.yml — broad and
+# unconfigured. Every key below is optional; an absent file changes nothing.
+#
+# Grammar note: this is a small YAML subset. Use inline lists ([a, b]); `#`
+# comments and quoted/bare scalars are fine. Block-style lists (`- item`) only
+# work if `yq` is installed. Unknown keys are warned about and ignored — never
+# fatal.
+
+# ── Stack ────────────────────────────────────────────────────────────────────
+# Override what the detector (detection.json) concluded.
+stack:
+  # Treat this stack as the primary one, regardless of the language breakdown.
+  # Drives which complexity/duplication engine runs and the command profile.
+  # force: dotnet
+
+  # Treat these detected stacks as absent — they won't steer engine routing.
+  # Useful when a tooling package.json makes a non-Node repo look like Node.
+  # suppress: [node]
+
+# ── Checks ───────────────────────────────────────────────────────────────────
+checks:
+  # Skip these project-built checks (they report as `skip`, reason
+  # "disabled in .checkup.yml"). Disableable slugs: typecheck, unit-tests,
+  # build, code-quality, type-aware-lint, semgrep, npm-audit, deps-freshness,
+  # circular-deps, unused-code, coverage, mutation.
+  # disable: [mutation, type-aware-lint]
+
+  # Opt in to checks that are off by default. Currently: mutation.
+  # enable: [mutation]
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+# Override the command a project-built check runs. The defaults below are the
+# Node profile (profiles/node.sh); set any to your stack's equivalent. An empty
+# value ("") disables that command (the check then skips honestly). Each can also
+# be set via the matching CHECKUP_CMD_<NAME> environment variable.
+commands:
+  # test:      "npm test"                                    # unit-tests
+  # build:     "npm run build"                               # build
+  # typecheck: "npm run typecheck"                           # typecheck
+  # lint:      "npm run lint"                                # code-quality (lint pass)
+  # format:    "npm run format:check"                        # code-quality (format pass)
+  # typeaware: "npx eslint -c eslint.config.type-aware.js"   # type-aware-lint
+  # deps:      "npm run quality:deps"                        # circular-deps
+  # unused:    "npm run quality:unused"                      # unused-code
+  # coverage:  "npm run test:coverage:report"               # coverage
+  # mutation:  "npx stryker run"                             # mutation
+  # security:  "npm run quality:security"                    # semgrep (npm-script path)
+  # audit:     "npm audit --json"                            # npm-audit
+  # outdated:  "npm outdated --json"                         # deps-freshness
+
+# ── Not yet configurable here ────────────────────────────────────────────────
+# - Extra scan excludes: use the CHECKUP_EXCLUDE environment variable for now
+#   (cross-scanner excludes are tracked separately).
+# - Per-check thresholds (complexity CCN, duplication %): planned.

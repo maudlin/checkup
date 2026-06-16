@@ -323,6 +323,13 @@ Caveats:
 
 ## npm-script contract
 
+These commands are the **default Node profile** (`profiles/node.sh`). Each is
+overridable per check — via a `.checkup.yml` `commands:` block or a
+`CHECKUP_CMD_<NAME>` environment variable — so adapting checkup to another stack
+is "set the commands", not "fork the orchestrator" (see
+[Overrides](#overrides-checkupyml)). On a Node repo with no overrides the
+defaults below apply unchanged.
+
 Every `npm run <script>` the orchestrator invokes must satisfy a small
 contract. If the host project's `package.json` deviates, the corresponding
 section may break. This table is the surface area a forker has to wire up.
@@ -357,6 +364,34 @@ Direct (non-npm) invocations — no `npm run` indirection, but listed for comple
 If a forker doesn't have one of these wired up, the section either skips (tool
 on PATH not present) or writes `fail` with a parse-error reason — never breaks
 the whole orchestrator.
+
+---
+
+## Overrides (`.checkup.yml`)
+
+checkup auto-detects your stack ([`detection.json`](docs/architecture.md)) and
+picks the default commands above. A repo-local **`.checkup.yml`** at the scan
+target overrides those deliberately, with no install step — the
+**agent-tailoring seam**. It is consulted first; an absent file changes nothing
+(broad, unconfigured runs are the norm for an audit of a repo you don't own).
+
+Copy [`.checkup.yml.example`](.checkup.yml.example) and prune. Keys (all
+optional):
+
+```yaml
+stack:
+  force: dotnet          # treat this as the primary stack (overrides detection)
+  suppress: [node]       # treat a detected stack as absent (e.g. a tooling-only package.json)
+checks:
+  disable: [mutation]    # skip a project-built check (reports as skip: "disabled in .checkup.yml")
+  enable:  [mutation]    # opt in to an off-by-default check
+commands:
+  test: "dotnet test"    # override a check's command ("" disables it); or set CHECKUP_CMD_TEST
+```
+
+It's a small YAML subset (inline lists `[a, b]`, `#` comments); `yq` is used if
+present but is not required. Unknown keys or malformed input are warned about and
+ignored — never fatal, never a false pass.
 
 ---
 
