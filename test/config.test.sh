@@ -98,5 +98,18 @@ assert_eq "disabled+skipped → honest reason" "disabled in .checkup.yml" "$(jq 
 assert_eq "a check that RAN is untouched"    "clean"                    "$(jq -r '.summary' "$PD/gitleaks.json")"
 
 echo ""
+echo ".checkup.yml.example stays in sync with the parser (no unknown keys)"
+EX="$CHECKUP_HOME/.checkup.yml.example"
+if [ -f "$EX" ]; then
+    # Uncomment only the commented key lines (`  # key: …`), leave prose comments.
+    UNC="$TMP/example-uncommented.yml"
+    sed -E 's/^( *)# ([a-z_]+:)/\1\2/' "$EX" > "$UNC"
+    warns=$( load_checkup_config "$UNC" 2>&1 >/dev/null | grep -c '⚠️' || true )
+    assert_eq "example parses with no warnings" "0" "$warns"
+else
+    notok "example present (.checkup.yml.example missing)"
+fi
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
