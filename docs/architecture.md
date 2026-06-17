@@ -131,16 +131,31 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 
 ```jsonc
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "primary": "node",                 // largest stack, or null when ambiguous
   "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
   "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
   "stacks":   [ { "stack", "code", "top3", "pct" } ],
   "manifests": [ "node", … ],
-  "engines":  { "complexity": { "engine", "reason" }, "duplication": { … } },
-  "overridden": false                // a `.checkup.yml` override layer is a follow-up
+  "engines":  {
+    // complexity.engine is the summary label (eslint | eslint+lizard | lizard |
+    // scc | none); complexity.slices lists the engines that each measure a
+    // language slice and are merged into one record (#68) — e.g.
+    // ["eslint","lizard"] for a node-dominant polyglot repo.
+    "complexity": { "engine", "reason", "slices": [ … ] },
+    "duplication": { "engine", "reason" }
+  },
+  "overridden": false                // true when a repo-local `.checkup.yml` steered detection
 }
 ```
+
+When a node-dominant repo also carries languages ESLint can't see (Python, C#,
+Go, …), complexity runs **per language slice and merges**: ESLint measures the
+JS/TS slice (AST-accurate cyclomatic + cognitive) and lizard the rest (true
+per-function CCN), partitioned by extension so no file is counted twice, folded
+into one `parsed/complexity.json` and one `complexity-full.csv` via the shared
+`lib/complexity-merge.jq` / `lib/complexity-csv.jq` transforms (#68). A
+single-language repo runs exactly one slice, so its output is unchanged.
 
 `primaryConfidence` raises the confidence behind absence-is-signal (#51): a
 "no tests" finding is asserted as a *genuine* absence only when we know we looked
