@@ -67,10 +67,9 @@ fi
 GIT_PREFIX=""
 [ "$GIT_OK" = true ] && GIT_PREFIX=$(git rev-parse --show-prefix 2>/dev/null)
 
-# Source roots for the git-axis checks (hotspots, change-coupling,
-# bug-fix-density) and the complexity scan. Space-separated; override via
-# CHECKUP_SRC_ROOTS for non-standard layouts (e.g. "app internal cmd").
-read -r -a SRC_ROOTS <<< "${CHECKUP_SRC_ROOTS:-src server}"
+# Scan scope is enumerated from the VCS, not guessed from a `src server`
+# convention — see lib/source-inventory.sh, invoked once the libs are sourced
+# below. CHECKUP_SRC_ROOTS still NARROWS the scope for focus / monorepo perf.
 
 # Operating mode (#5). checkup localises codebase-health problems — it is NOT a
 # deploy or CI gate (ADR-0009). Mode shapes the closing verdict's framing:
@@ -101,63 +100,18 @@ else
     for c in /usr/local/bin/lizard "$HOME/.local/bin/lizard"; do [ -x "$c" ] && { LIZARD_BIN="$c"; break; }; done
 fi
 
-# Source roots that actually exist on disk. Non-standard legacy layouts (a
-# multi-site ASP app) have neither src/ nor server/ — scan the whole tree then.
-SCAN_ROOTS=()
-for r in "${SRC_ROOTS[@]}"; do [ -d "$r" ] && SCAN_ROOTS+=("$r"); done
-[ "${#SCAN_ROOTS[@]}" -eq 0 ] && SCAN_ROOTS=(".")
-
 # The git-forensic axes (hotspots, change-coupling, bug-fix-density) scan
-# SCAN_ROOTS — NOT the raw SRC_ROOTS — so a monorepo whose code lives under
-# non-standard top-level dirs (neither src/ nor server/) is analysed via the
-# tree fallback instead of silently matching nothing and reporting an empty
-# "pass" (#42). Analysis window is configurable; when there are no commits in
-# the window the axes degrade to skip-with-reason, never a false pass.
+# SCAN_ROOTS, which now defaults to the whole tree (lib/source-inventory.sh) so a
+# monorepo whose code lives under non-standard top-level dirs is analysed in full
+# instead of silently matching nothing and reporting an empty "pass" (#42).
+# Analysis window is configurable; when there are no commits in the window the
+# axes degrade to skip-with-reason, never a false pass.
 FORENSIC_SINCE="${CHECKUP_FORENSIC_SINCE:-6.months.ago}"
 if [ -n "${CHECKUP_FORENSIC_SINCE:-}" ]; then
     FORENSIC_WINDOW="since $FORENSIC_SINCE"
 else
     FORENSIC_WINDOW="the last 6 months"
 fi
-
-# Does the tree contain any source lizard can tokenise? (`-prune` keeps the
-# probe cheap on big trees.) Gates both the lizard complexity and lizard
-# duplication tiers — distinguishes "no parseable source → skip" from
-# "source present but clean → pass".
-LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
-    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
-
-# Like LIZARD_PROBE but EXCLUDING the JS/TS slice ESLint owns (#68). Non-empty
-# when the tree has lizard-parseable source in a language ESLint cannot measure
-# (Python, C#, Go, Java, …). This is the gate for co-running lizard alongside
-# ESLint on a node-dominant polyglot repo: ESLint takes the JS/TS slice, lizard
-# takes the rest, partitioned by extension so no file is counted twice.
-NONJS_LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
-    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' \) -print 2>/dev/null | head -1)
-
-# Extra lizard `-x` globs that fence OFF the JS/TS slice, so the lizard tier in
-# the merged polyglot path (#68) never re-measures a file ESLint already owns.
-# Applied ONLY in that merged path — the standalone lizard tier (single-language
-# or non-node-dominant repos) keeps its exact prior arg list, byte-for-byte.
-LIZARD_NONJS_X_ARGS=(-x '*.ts' -x '*.tsx' -x '*.js' -x '*.jsx' -x '*.mjs' -x '*.cjs')
-
-# Paths excluded from BOTH lizard scans (complexity + duplication). Generated,
-# vendored, and intentionally-repetitive files otherwise dominate the signal —
-# framework migrations and test snapshots register as "clones", a single
-# minified bundle registers as hundreds of high-CCN "functions" — and crowd out
-# real findings in Focus Areas (#41). lizard's `-x` takes fnmatch globs (* spans
-# directories), applied at the scan layer. Extra globs via CHECKUP_EXCLUDE
-# (space-separated, additive); #18 will formalise cross-scanner excludes.
-LIZARD_EXCLUDES=(
-    '*/node_modules/*' '*/dist/*' '*/build/*' '*/.svelte-kit/*'
-    '*/vendor/*' '*/vendored/*' '*/third_party/*'
-    '*/migrations/*' '*/__snapshots__/*' '*/snapshots/*'
-    '*.min.js' '*.min.css' '*.bundle.js' '*.snap'
-)
-# shellcheck disable=SC2206  # word-split CHECKUP_EXCLUDE into additional globs
-[ -n "${CHECKUP_EXCLUDE:-}" ] && LIZARD_EXCLUDES+=(${CHECKUP_EXCLUDE})
-LIZARD_X_ARGS=()
-for g in "${LIZARD_EXCLUDES[@]}"; do LIZARD_X_ARGS+=(-x "$g"); done
 
 # Where checkup writes its own intermediates (raw captures, parsed JSON,
 # summary, by-file aggregate, complexity CSV, history). Defaults to the
@@ -179,6 +133,22 @@ source "$CHECKUP_HOME/lib/run-tool.sh"
 source "$CHECKUP_HOME/lib/profile.sh"
 # shellcheck source=../lib/config.sh
 source "$CHECKUP_HOME/lib/config.sh"
+# shellcheck source=../lib/source-inventory.sh
+source "$CHECKUP_HOME/lib/source-inventory.sh"
+
+# Resolve the scan scope and enumerate the source inventory ONCE, honestly, from
+# the VCS (#75). Everything downstream — the lizard tiers (fed the file list, as
+# lizard does NOT honour .gitignore), the git-forensic axes (SCAN_ROOTS), the
+# ESLint slice (findings filtered back to this list), and the language probes —
+# reads from this single source of truth instead of a guessed `src server` root.
+resolve_scan_roots
+build_source_inventory
+
+# Language probes, derived from the inventory so they agree exactly with what
+# gets measured. LIZARD_PROBE gates the lizard tiers; NONJS_LIZARD_PROBE gates
+# co-running lizard on the non-JS slice of a node-dominant polyglot repo (#68).
+LIZARD_PROBE=$(inventory_paths "$INV_LIZARD_RE" | head -c1)
+NONJS_LIZARD_PROBE=$(inventory_paths "$INV_NONJS_RE" | head -c1)
 
 echo "🩺 Application Checkup"
 echo "===================="
@@ -230,9 +200,9 @@ if command -v scc > /dev/null 2>&1; then SCC_BIN="scc"; else
     for c in /usr/local/bin/scc "$HOME/.local/bin/scc"; do [ -x "$c" ] && { SCC_BIN="$c"; break; }; done
 fi
 
-# Does the tree contain JS/TS source at all? (Node engines are pointless without it.)
-NODE_SRC_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .svelte-kit -o -name dist -o -name build \) -prune -o \
-    -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \) -print 2>/dev/null | head -1)
+# Does the tree contain JS/TS source at all? (Node engines are pointless without
+# it.) From the inventory, so it agrees with what the engines actually measure.
+NODE_SRC_PROBE=$(inventory_paths "$INV_JSTS_RE" | head -c1)
 
 # Manifest sweep (how-to-build), shallow so a monorepo's sub-packages count but a
 # vendored dependency's manifest doesn't dominate.
@@ -1181,7 +1151,12 @@ elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     echo "Command: lizard -Eduplicate (excluding generated/vendored/repetitive paths)"
     echo ""
     MAX_SCORE=$((MAX_SCORE + 5))
-    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${LIZARD_X_ARGS[@]}" "${SCAN_ROOTS[@]}"
+    # Feed lizard the VCS-tracked file list (#75): lizard does NOT honour
+    # .gitignore, so scanning a root would ingest generated/vendored files. This
+    # branch is gated on LIZARD_PROBE, derived from the same inventory, so the
+    # list is non-empty.
+    mapfile -d '' DUP_FILES < <(inventory_paths "$INV_LIZARD_RE")
+    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${DUP_FILES[@]}"
     # lizard always prints the "Duplicates" banner once it has analysed files;
     # its absence means the invocation itself failed (bad flag, no readable
     # source) — which must NOT be read as "0% → clean pass".
@@ -1593,11 +1568,32 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" =
     # eslint.config.js). --rule overrides whatever's in the config for this
     # invocation; the project's flat config is still loaded so parser + plugins
     # work correctly. --no-warn-ignored suppresses noise about ignored files.
+    # Scan the whole tree (SCAN_ROOTS defaults to ".", the canonical `eslint .`
+    # which auto-ignores node_modules and obeys the flat config's own ignores).
+    # This replaces the old raw `${SRC_ROOTS[@]}` which passed a phantom `server`
+    # path on src-only repos and made the check error out (#75). ESLint does not
+    # honour .gitignore, so its findings are filtered back to the VCS inventory
+    # below — the inventory stays the single authority for "what counts".
     run_tool "Complexity Hotspots" npx eslint \
         --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
         --format json --no-warn-ignored \
-        "${SRC_ROOTS[@]}"
+        "${SCAN_ROOTS[@]}"
     ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
+
+    # Graceful degrade (#75): now that we scan the whole tree, the run can include
+    # files whose flat config doesn't register the sonarjs plugin (e.g. a root
+    # eslint.config.js, or a project that simply doesn't use sonarjs) — the
+    # injected cognitive rule then fails to LOAD and the whole run errors. Retry
+    # cyclomatic-only (a built-in rule that can't fail on a missing plugin) so we
+    # still get CCN coverage instead of a total failure. Cognitive is then absent
+    # for this run (JS/TS-only metric, best-effort).
+    if ! is_valid_json "$ESLINT_RAW"; then
+        run_tool "Complexity Hotspots" npx eslint \
+            --rule '{"complexity":["warn",10]}' \
+            --format json --no-warn-ignored \
+            "${SCAN_ROOTS[@]}"
+        ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
+    fi
 
     if ! is_valid_json "$ESLINT_RAW"; then
         echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $ESLINT_EXIT)${NC}"
@@ -1651,16 +1647,27 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" =
             ]
         ' "$ESLINT_RAW")
 
+        # Keep only findings in the VCS-tracked inventory (#75). ESLint traverses
+        # the tree itself and does not honour .gitignore, so any generated/ignored
+        # file it happened to lint is dropped here — the inventory is the single
+        # authority for "what counts", and this also re-applies the src→tree scope
+        # change without ESLint erroring on files that match no flat-config entry.
+        ESLINT_FINDINGS=$(echo "$ESLINT_FINDINGS" \
+            | jq --argjson keep "$(inventory_json "$INV_JSTS_RE")" \
+                 '[ .[] | select(.file as $f | $keep | index($f) != null) ]')
+
         # ── non-JS slice (lizard) ────────────────────────────────────────────
-        # Fenced off the JS/TS extensions ESLint already owns (LIZARD_NONJS_X_ARGS)
-        # so no file is double-counted. A lizard failure here does NOT sink the
-        # section — the dominant JS/TS slice already produced valid findings — so
-        # we warn and continue with an empty non-JS slice (honest partial
-        # coverage), unlike the standalone lizard tier which write_failed's.
+        # Fed the non-JS subset of the tracked inventory (#75): partitioned by
+        # extension so no file ESLint owns is re-measured, and (unlike a root
+        # scan) lizard never ingests gitignored/generated files. A lizard failure
+        # here does NOT sink the section — the dominant JS/TS slice already
+        # produced valid findings — so we warn and continue with an empty non-JS
+        # slice (honest partial coverage), unlike the standalone lizard tier which
+        # write_failed's.
         LIZARD_FINDINGS='[]'
         if [ "$RUN_LIZARD_SLICE" = true ]; then
-            run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 \
-                "${LIZARD_X_ARGS[@]}" "${LIZARD_NONJS_X_ARGS[@]}" "${CPLX_ROOTS[@]}"
+            mapfile -d '' NONJS_FILES < <(inventory_paths "$INV_NONJS_RE")
+            run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${NONJS_FILES[@]}"
             if [ ! -s "$LAST_RAW" ]; then
                 echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT) — JS/TS coverage stands${NC}"
             else
@@ -1761,7 +1768,10 @@ elif [ "$DETECT_ENGINE_COMPLEXITY" = "lizard" ]; then
     # --CCN 9999 forces a zero warning count so lizard exits 0 regardless of how
     # many hotspots it finds; --csv still lists every function. The columns are
     # the canonical lizard CSV (col 2 = CCN, col 7 = file) git-hotspots consumes.
-    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${LIZARD_X_ARGS[@]}" "${CPLX_ROOTS[@]}"
+    # Fed the VCS-tracked file list (#75) — lizard doesn't honour .gitignore.
+    # Gated on LIZARD_PROBE (same inventory), so the list is non-empty.
+    mapfile -d '' CPLX_LIZARD_FILES < <(inventory_paths "$INV_LIZARD_RE")
+    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${CPLX_LIZARD_FILES[@]}"
 
     # lizard --csv is CSV, not JSON — validate by content, not is_valid_json. The
     # extension probe already confirmed lizard-parseable source exists, so empty
