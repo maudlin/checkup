@@ -127,6 +127,20 @@ fi
 LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
     -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print 2>/dev/null | head -1)
 
+# Like LIZARD_PROBE but EXCLUDING the JS/TS slice ESLint owns (#68). Non-empty
+# when the tree has lizard-parseable source in a language ESLint cannot measure
+# (Python, C#, Go, Java, …). This is the gate for co-running lizard alongside
+# ESLint on a node-dominant polyglot repo: ESLint takes the JS/TS slice, lizard
+# takes the rest, partitioned by extension so no file is counted twice.
+NONJS_LIZARD_PROBE=$(find "${SCAN_ROOTS[@]}" \( -name node_modules \) -prune -o \
+    -type f \( -name '*.py' -o -name '*.cs' -o -name '*.java' -o -name '*.go' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' -o -name '*.rb' -o -name '*.php' -o -name '*.swift' -o -name '*.scala' -o -name '*.rs' -o -name '*.kt' -o -name '*.kts' -o -name '*.m' -o -name '*.mm' -o -name '*.lua' \) -print 2>/dev/null | head -1)
+
+# Extra lizard `-x` globs that fence OFF the JS/TS slice, so the lizard tier in
+# the merged polyglot path (#68) never re-measures a file ESLint already owns.
+# Applied ONLY in that merged path — the standalone lizard tier (single-language
+# or non-node-dominant repos) keeps its exact prior arg list, byte-for-byte.
+LIZARD_NONJS_X_ARGS=(-x '*.ts' -x '*.tsx' -x '*.js' -x '*.jsx' -x '*.mjs' -x '*.cjs')
+
 # Paths excluded from BOTH lizard scans (complexity + duplication). Generated,
 # vendored, and intentionally-repetitive files otherwise dominate the signal —
 # framework migrations and test snapshots register as "clones", a single
@@ -290,10 +304,41 @@ if manifest_has node; then
     fi
 fi
 
-# Engine routing — descending accuracy, gated on real dominance.
+# Complexity routing — per language SLICE, not one engine for the whole repo
+# (#68). DETECT_COMPLEXITY_SLICES is the ordered set of engines that will each
+# measure their best-fit slice and be merged into ONE complexity record + CSV:
+#   - eslint : the JS/TS slice — AST-accurate cyclomatic + cognitive.
+#   - lizard : the remaining lizard-parseable (non-JS/TS) languages.
+# On a single-language repo exactly one slice is populated, so the merged path
+# collapses to the prior single-engine output (byte-identical — the acceptance
+# gate). DETECT_ENGINE_COMPLEXITY stays the human-facing summary label
+# (eslint / eslint+lizard / lizard / scc / none) for the console + detection.json.
+#
+# Why ESLint only when node is DOMINANT (not merely present): ESLint hard-fails
+# without a resolvable flat config, so a stray .ts in a Python monorepo must NOT
+# route here — that is the exact mis-route #7 fixed. lizard's TS parser is weaker
+# (the reason ESLint is preferred for TS), so we never silently fall ESLint →
+# lizard on the JS/TS slice; an ESLint failure on a node-dominant repo stays an
+# honest fail telling the owner to fix their config. Running ESLint on the JS/TS
+# slice of a non-node-dominant polyglot (so its TS gets AST-grade complexity too)
+# is the symmetric improvement tracked in #73 — it needs a flat-config probe and
+# is out of scope here.
+DETECT_COMPLEXITY_SLICES=""
 if [ "$NODE_DOMINANT" = true ] && [ -n "$NODE_SRC_PROBE" ] && command -v npx > /dev/null 2>&1; then
-    DETECT_ENGINE_COMPLEXITY="eslint"; CPLX_REASON="node is a dominant stack (+ JS/TS source + npx) → ESLint (AST-accurate cyclomatic + cognitive)"
+    DETECT_COMPLEXITY_SLICES="eslint"
+    # Co-run lizard on the non-JS slice when node-dominant repos also carry
+    # languages ESLint can't see (Python/C#/Go/…) — otherwise that complexity is
+    # missed entirely (the sharper polyglot gap #68 closes).
+    if [ -n "$LIZARD_BIN" ] && [ -n "$NONJS_LIZARD_PROBE" ]; then
+        DETECT_COMPLEXITY_SLICES="eslint lizard"
+        DETECT_ENGINE_COMPLEXITY="eslint+lizard"
+        CPLX_REASON="node dominant → ESLint on the JS/TS slice; lizard on the non-JS source (Python/C#/Go/…) — partitioned by extension, merged into one record"
+    else
+        DETECT_ENGINE_COMPLEXITY="eslint"
+        CPLX_REASON="node is a dominant stack (+ JS/TS source + npx) → ESLint (AST-accurate cyclomatic + cognitive)"
+    fi
 elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
+    DETECT_COMPLEXITY_SLICES="lizard"
     DETECT_ENGINE_COMPLEXITY="lizard"; CPLX_REASON="lizard-parseable source → lizard (true per-function CCN, multi-language)"
 elif [ -n "$SCC_BIN" ]; then
     DETECT_ENGINE_COMPLEXITY="scc"; CPLX_REASON="scc fallback (decision-keyword heuristic; the only engine covering Classic ASP)"
@@ -327,6 +372,13 @@ elif [ "${#DETECT_MANIFESTS[@]}" -eq 1 ]; then
     DETECT_PRIMARY="${DETECT_MANIFESTS[0]}"; DETECT_PRIMARY_CONFIDENCE="low"
 fi
 
+# Complexity slice list for the artefact (#68): the engines that will each
+# measure a slice and be merged. The single-engine arms are a one-element list
+# (scc has no DETECT_COMPLEXITY_SLICES of its own); none → empty.
+CPLX_SLICES="$DETECT_COMPLEXITY_SLICES"
+[ -z "$CPLX_SLICES" ] && [ "$DETECT_ENGINE_COMPLEXITY" = "scc" ] && CPLX_SLICES="scc"
+CPLX_SLICES_JSON=$(printf '%s' "$CPLX_SLICES" | tr ' ' '\n' | jq -R . | jq -s 'map(select(length>0))')
+
 # Persist the plan as an agent-facing artefact (sibling to focus.json/by-file.json
 # — deliberately NOT under parsed/, which the renderer counts as checks).
 jq -n \
@@ -334,14 +386,15 @@ jq -n \
     --argjson manifests "$(printf '%s\n' "${DETECT_MANIFESTS[@]}" | jq -R . | jq -s 'map(select(length>0))')" \
     --arg primary "$DETECT_PRIMARY" --arg conf "$DETECT_PRIMARY_CONFIDENCE" \
     --arg ec "$DETECT_ENGINE_COMPLEXITY" --arg ed "$DETECT_ENGINE_DUPLICATION" \
+    --argjson slices "$CPLX_SLICES_JSON" \
     --arg cr "$CPLX_REASON" --arg dr "$DUP_REASON" --arg sccok "$SCC_OK" \
     --arg overridden "$CHECKUP_OVERRIDDEN" '
-    {schemaVersion:"1.0",
+    {schemaVersion:"1.1",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
-     engines: {complexity:{engine:$ec, reason:$cr}, duplication:{engine:$ed, reason:$dr}},
+     engines: {complexity:{engine:$ec, reason:$cr, slices:$slices}, duplication:{engine:$ed, reason:$dr}},
      overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
 # Print the plan (drawn from the same values → console and detection.json agree).
@@ -1484,6 +1537,16 @@ COMPLEXITY_INTENT=$(jq -n '{
     fail_means: "Any function over CCN/cognitive 30 — refactor or cover with dedicated tests. 20-29 = warning."
 }')
 
+# Intent for the merged two-engine record (#68), used only when a node-dominant
+# polyglot repo runs ESLint on the JS/TS slice AND lizard on the non-JS slice.
+# The single-slice (ESLint-only) path keeps COMPLEXITY_INTENT verbatim so its
+# output stays byte-identical to before.
+COMPLEXITY_MERGED_INTENT=$(jq -n '{
+    purpose:    "Identify functions whose complexity makes them likely bug-incubators, across a polyglot repo. The JS/TS slice is measured AST-accurately by ESLint (typescript-eslint: cyclomatic + cognitive); the remaining languages (Python/C#/Go/Java/…) by lizard (true per-function CCN). Partitioned by extension and merged into one record; feeds the churn × complexity git-hotspots join.",
+    pass_means: "No functions over CCN 10 (or cognitive 15 on the JS/TS slice).",
+    fail_means: "Any function over CCN/cognitive 30 — refactor or cover with dedicated tests. 20-29 = warning. (Cognitive complexity is JS/TS-only, via ESLint.)"
+}')
+
 # Engine, scan roots and tool paths are decided ONCE by the detector (#7):
 #   1. ESLint   — JS/TS only: AST-accurate cyclomatic AND cognitive complexity.
 #   2. lizard   — true per-function CCN for the many languages it parses
@@ -1504,10 +1567,28 @@ CPLX_SCC="$SCC_BIN"
 CPLX_LIZARD="$LIZARD_BIN"
 CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 
-if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
+if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" = "eslint+lizard" ]; then
+    # Per-language slice routing (#68). ESLint measures the JS/TS slice
+    # (AST-accurate cyclomatic + cognitive); when the detector also routed a
+    # lizard slice (a node-dominant repo that ALSO carries non-JS languages),
+    # lizard measures the rest (Python/C#/Go/…). The two findings sets are
+    # partitioned by file extension — lizard is fenced off the JS/TS extensions
+    # ESLint owns — so no file is counted twice, then merged into ONE record and
+    # ONE Tornhill CSV. With only the ESLint slice the merge collapses to the
+    # historical single-engine output, byte-for-byte (the acceptance gate).
+    RUN_LIZARD_SLICE=false
+    case " $DETECT_COMPLEXITY_SLICES " in *" lizard "*) RUN_LIZARD_SLICE=true ;; esac
+    if [ "$RUN_LIZARD_SLICE" = true ]; then
+        CPLX_RECORD_INTENT="$COMPLEXITY_MERGED_INTENT"
+    else
+        CPLX_RECORD_INTENT="$COMPLEXITY_INTENT"
+    fi
+
     echo -e "${GREEN}✅ ESLint available via npx${NC}"
+    [ "$RUN_LIZARD_SLICE" = true ] && echo -e "${GREEN}✅ lizard available — non-JS slice (Python/C#/Go/…)${NC}"
     echo ""
 
+    # ── JS/TS slice (ESLint) ──────────────────────────────────────────────────
     # Reporter thresholds (warn-level, much lower than the gating thresholds in
     # eslint.config.js). --rule overrides whatever's in the config for this
     # invocation; the project's flat config is still loaded so parser + plugins
@@ -1516,10 +1597,11 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
         --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
         --format json --no-warn-ignored \
         "${SRC_ROOTS[@]}"
+    ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
 
-    if ! is_valid_json "$LAST_RAW"; then
-        echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $LAST_EXIT)${NC}"
-        write_failed "complexity" "ESLint produced unparseable JSON (exit $LAST_EXIT)" "$COMPLEXITY_INTENT"
+    if ! is_valid_json "$ESLINT_RAW"; then
+        echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $ESLINT_EXIT)${NC}"
+        write_failed "complexity" "ESLint produced unparseable JSON (exit $ESLINT_EXIT)" "$CPLX_RECORD_INTENT"
     else
         # Normalise to TARGET-relative paths (not repo-root), so a subdirectory
         # target shares one path namespace with the file-based scanners and the
@@ -1529,7 +1611,7 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
         # for general issues; we only exclude them from complexity *reporting*
         # because tests legitimately have higher branching (matcher paths) than
         # production code, and dist/build paths are generated.
-        ALL_FINDINGS=$(jq --arg root "$TARGET" '
+        ESLINT_FINDINGS=$(jq --arg root "$TARGET" '
             [ .[]
               | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
               | .filePath as $fp
@@ -1567,9 +1649,53 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
                   message: ($fname + " — " + (if $kind == "COG" then "cognitive complexity " else "CCN " end) + ($ccn | tostring))
                 }
             ]
-        ' "$LAST_RAW")
+        ' "$ESLINT_RAW")
 
-        TOTAL_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
+        # ── non-JS slice (lizard) ────────────────────────────────────────────
+        # Fenced off the JS/TS extensions ESLint already owns (LIZARD_NONJS_X_ARGS)
+        # so no file is double-counted. A lizard failure here does NOT sink the
+        # section — the dominant JS/TS slice already produced valid findings — so
+        # we warn and continue with an empty non-JS slice (honest partial
+        # coverage), unlike the standalone lizard tier which write_failed's.
+        LIZARD_FINDINGS='[]'
+        if [ "$RUN_LIZARD_SLICE" = true ]; then
+            run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 \
+                "${LIZARD_X_ARGS[@]}" "${LIZARD_NONJS_X_ARGS[@]}" "${CPLX_ROOTS[@]}"
+            if [ ! -s "$LAST_RAW" ]; then
+                echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT) — JS/TS coverage stands${NC}"
+            else
+                # Same CSV parse as the standalone lizard tier (cols 2/6/7/8
+                # pre-comma-safe; ccn ≥ 10; test/build filtered).
+                LIZARD_FINDINGS=$(jq -R -s --arg root "$TARGET" '
+                    def unq: gsub("^\"|\"$"; "");
+                    [ split("\n")[]
+                      | select(length > 0)
+                      | split(",") as $f
+                      | select(($f | length) >= 11)
+                      | ($f[1] | tonumber) as $ccn
+                      | ($f[5] | unq) as $loc
+                      | ($f[6] | unq) as $file
+                      | ($f[7] | unq) as $fname
+                      | select($ccn >= 10)
+                      | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
+                      | {
+                          file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
+                          line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
+                          ccn: $ccn,
+                          code: ("CCN-" + ($ccn | tostring)),
+                          severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                          message: ($fname + " — CCN " + ($ccn | tostring))
+                        }
+                    ]
+                ' "$LAST_RAW")
+            fi
+        fi
+
+        # Merge the slices (disjoint by extension → no dedup) and fold to the
+        # shared record fields via the one-source-of-truth transform.
+        ALL_FINDINGS=$(jq -n --argjson a "$ESLINT_FINDINGS" --argjson b "$LIZARD_FINDINGS" '$a + $b')
+        CPLX_MERGED=$(echo "$ALL_FINDINGS" | jq -f "$CHECKUP_HOME/lib/complexity-merge.jq")
+        TOTAL_COUNT=$(echo "$CPLX_MERGED" | jq '.count')
 
         # Reset the Tornhill-input CSV ahead of the branching. If we don't
         # truncate, a previous dirty run leaves stale CCN rows behind that
@@ -1581,15 +1707,13 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
 
         if [ "$TOTAL_COUNT" -eq 0 ]; then
             echo -e "${GREEN}✅ No functions over CCN 10 / cognitive 15${NC}"
-            write_parsed "complexity" "pass" 0 "No hotspots over CCN 10 / cognitive 15" '[]' "$COMPLEXITY_INTENT"
+            write_parsed "complexity" "pass" 0 "No hotspots over CCN 10 / cognitive 15" '[]' "$CPLX_RECORD_INTENT"
         else
             # Top 20 by descending score; the public top[] sheds the internal
             # .ccn sort key so the substrate schema stays clean.
-            TOP_FINDINGS=$(echo "$ALL_FINDINGS" | jq 'sort_by(-.ccn) | .[0:20] | map(del(.ccn))')
-            HIGHEST_CCN=$(echo "$ALL_FINDINGS" | jq '[.[].ccn] | max')
-
-            STATUS="warn"
-            [ "$HIGHEST_CCN" -ge 30 ] && STATUS="fail"
+            TOP_FINDINGS=$(echo "$CPLX_MERGED" | jq '.top')
+            HIGHEST_CCN=$(echo "$CPLX_MERGED" | jq '.highest')
+            STATUS=$(echo "$CPLX_MERGED" | jq -r '.status')
 
             # Terminal display
             printf "%-7s %-50s %s\n" "Score" "Function" "Location"
@@ -1602,27 +1726,26 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ]; then
 
             # Write Tornhill-compatible CSV from the cyclomatic findings only —
             # cognitive is a separate metric and would skew column-2 "CCN" reads
-            # in the git-hotspots section (which expects radon-style CCN).
-            # Lizard CSV column layout, preserved for downstream compatibility:
+            # in the git-hotspots section (which expects radon-style CCN). Both
+            # slices contribute CCN- rows in the same layout:
             #   NLOC, CCN, token, params, length, function_id, file,
             #   function_name, signature, start_line, end_line
             # Tornhill (section 19) reads only columns 2 (CCN) and 7 (file);
-            # the rest are zero-padded.
+            # the rest are zero-padded. The partition is disjoint, so no file
+            # appears twice; even if it did, the git-hotspots max-per-file join
+            # is idempotent.
             # NB: the CSV is truncated ahead of the if-else above; this is the
             # only branch that populates it.
-            echo "$ALL_FINDINGS" | jq -r '
-                .[] | select(.code | startswith("CCN-")) |
-                [0, .ccn, 0, 0, 0,
-                 ("eslint:" + .file + "@" + (.line | tostring)),
-                 .file,
-                 ((.message | split(" — ")[0])),
-                 "",
-                 .line, .line] | @csv
-            ' > "$OUT_DIR/complexity-full.csv"
+            {
+                echo "$ESLINT_FINDINGS" | jq -r --arg prefix eslint -f "$CHECKUP_HOME/lib/complexity-csv.jq"
+                if [ "$RUN_LIZARD_SLICE" = true ]; then
+                    echo "$LIZARD_FINDINGS" | jq -r --arg prefix lizard -f "$CHECKUP_HOME/lib/complexity-csv.jq"
+                fi
+            } > "$OUT_DIR/complexity-full.csv"
 
             write_parsed "complexity" "$STATUS" "$TOTAL_COUNT" \
                 "$TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 reported, highest score $HIGHEST_CCN)" \
-                "$TOP_FINDINGS" "$COMPLEXITY_INTENT"
+                "$TOP_FINDINGS" "$CPLX_RECORD_INTENT"
         fi
     fi
 elif [ "$DETECT_ENGINE_COMPLEXITY" = "lizard" ]; then
