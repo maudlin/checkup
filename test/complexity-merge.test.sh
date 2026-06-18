@@ -101,21 +101,42 @@ assert_eq "no COG score in any col2" "" \
           "$(csv "$MIX" eslint | cut -d, -f2 | grep -x 18 || true)"
 
 echo ""
-echo "routing: the bash slice-selection rule (mirrors bin/checkup.sh)"
-# Replicates the node-dominant arm of the complexity router. node_src + npx are
-# assumed present (that arm's precondition); inputs vary the two #68 signals.
-complexity_slices() { # <node_dominant> <nonjs_lizard_present> <lizard_installed>
-    local node_dom="$1" nonjs="$2" lizard="$3"
+echo "routing: the node-dominant slice-selection rule (mirrors bin/checkup.sh)"
+# Replicates the node-dominant merged arm. The ESLint slice is gated on a
+# runnable config (#79: ESLINT_SLICE_OK), so a node-dominant repo with non-JS
+# source but no ESLint config routes lizard-only (JS/TS unmeasured) — it must
+# NOT drop to "eslint" and then fail.
+complexity_slices() { # <node_dom> <nonjs_present> <lizard_installed> <eslint_ok>
+    local node_dom="$1" nonjs="$2" lizard="$3" eslint_ok="$4" out=""
     if [ "$node_dom" = true ]; then
-        if [ "$lizard" = true ] && [ "$nonjs" = true ]; then echo "eslint lizard"; else echo "eslint"; fi
+        [ "$eslint_ok" = true ] && out="eslint"
+        [ "$lizard" = true ] && [ "$nonjs" = true ] && out="${out:+$out }lizard"
+        echo "$out"
     else
         echo ""   # non-node-dominant → standalone lizard/scc arms, not the merged path
     fi
 }
-assert_eq "dominant + non-JS + lizard → merge"  "eslint lizard" "$(complexity_slices true  true  true)"
-assert_eq "dominant, no non-JS → eslint only"   "eslint"        "$(complexity_slices true  false true)"
-assert_eq "dominant, non-JS but no lizard"      "eslint"        "$(complexity_slices true  true  false)"
-assert_eq "not dominant → no merged slices"     ""              "$(complexity_slices false true  true)"
+assert_eq "dominant + non-JS + lizard + eslint → merge" "eslint lizard" "$(complexity_slices true  true  true  true)"
+assert_eq "dominant, no non-JS, eslint ok → eslint"     "eslint"        "$(complexity_slices true  false true  true)"
+assert_eq "#79: dominant + non-JS, NO eslint config → lizard-only" "lizard" "$(complexity_slices true true true false)"
+assert_eq "#79: dominant, no eslint config, no non-JS → empty"     ""       "$(complexity_slices true false true false)"
+assert_eq "not dominant → no merged slices"             ""              "$(complexity_slices false true  true  true)"
+
+echo ""
+echo "#79: record decision — degrade, don't sink; fail/skip only when nothing ran"
+# Mirrors the merged-arm gate: a slice that RAN (even with 0 findings) → real
+# pass/warn/fail; nothing ran + a slice was attempted → fail; nothing ran +
+# nothing routable → skip.
+record_decision() { # <eslint_ran> <lizard_ran> <eslint_attempted> <lizard_attempted>
+    local er="$1" lr="$2" ea="$3" la="$4"
+    if [ "$er" = true ] || [ "$lr" = true ]; then echo "measured"
+    elif [ "$ea" = true ] || [ "$la" = true ]; then echo "failed"
+    else echo "skipped"; fi
+}
+assert_eq "eslint failed but lizard ran → measured" "measured" "$(record_decision false true true true)"
+assert_eq "eslint ran, no lizard → measured"        "measured" "$(record_decision true false true false)"
+assert_eq "eslint attempted+failed, no lizard → failed" "failed" "$(record_decision false false true false)"
+assert_eq "nothing routable → skipped"              "skipped"  "$(record_decision false false false false)"
 
 echo ""
 echo "integration: lizard fences off the JS/TS slice (needs lizard)"
