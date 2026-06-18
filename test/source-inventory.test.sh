@@ -125,5 +125,20 @@ assert_eq "override:git scope → .gitignore" ".gitignore"             "$(SOURCE
 assert_eq "find scope → builtin excludes"  "builtin excludes (no VCS)" "$(SOURCE_SCOPE=find inventory_exclusion_source)"
 
 echo ""
+echo "eslint_flat_config_root: gates the ESLint complexity slice (#79)"
+CFG="$TMP/cfgprobe"; mkdir -p "$CFG/pkg"
+assert_eq "no config → empty + rc1" "MISS" "$( eslint_flat_config_root "$CFG" || echo MISS )"
+for ext in js mjs cjs ts; do
+    rm -f "$CFG"/eslint.config.*
+    : > "$CFG/eslint.config.$ext"
+    assert_eq "finds eslint.config.$ext" "$CFG/eslint.config.$ext" "$(eslint_flat_config_root "$CFG")"
+done
+# The dotCMS shape: config only in a sub-package, none at root → must NOT resolve
+# (that's the regression #79 fixes — `eslint .` from root would error).
+rm -f "$CFG"/eslint.config.*
+: > "$CFG/pkg/eslint.config.js"
+assert_eq "sub-package-only config → root probe misses" "MISS" "$( eslint_flat_config_root "$CFG" || echo MISS )"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

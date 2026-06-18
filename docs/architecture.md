@@ -131,7 +131,7 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 
 ```jsonc
 {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "primary": "node",                 // largest stack, or null when ambiguous
   "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
   "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
@@ -149,10 +149,13 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
   // scan. assessedFiles = tracked source enumerated from the VCS; scope = how it
   // was enumerated (git | fd | find | override:<tier>); exclusionSource = whose
   // rules dropped the rest (.gitignore vs builtin); byArea = files per top-level
-  // dir; narrowed = true when CHECKUP_SRC_ROOTS restricted the scope.
+  // dir; narrowed = true when CHECKUP_SRC_ROOTS restricted the scope; unmeasured
+  // names what a routed engine could NOT cover (e.g. JS/TS complexity when no
+  // resolvable ESLint config — #79), so the gap is explicit, not a false pass.
   "coverage": {
     "assessedFiles": 412, "scope": "git", "exclusionSource": ".gitignore",
-    "narrowed": false, "byArea": { "src": 280, "server": 110, "scripts": 22 }
+    "narrowed": false, "byArea": { "src": 280, "server": 110, "scripts": 22 },
+    "unmeasured": []                 // e.g. ["JS/TS complexity (no resolvable root ESLint config)"]
   },
   "overridden": false                // true when a repo-local `.checkup.yml` steered detection
 }

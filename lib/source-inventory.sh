@@ -151,3 +151,17 @@ inventory_exclusion_source() {
         *)     echo "builtin excludes (no VCS)" ;;
     esac
 }
+
+# Resolve an ESLint flat config at <dir> (default "."). Prints the first
+# eslint.config.{js,mjs,cjs,ts}, or nothing + rc 1. This is the ONLY place
+# `eslint .` from the root resolves a flat config (ESLint v9 does not search
+# upward for the root invocation), so it gates the ESLint complexity slice (#79)
+# — and #73 reuses it for the non-node-dominant case. Pure: a file test, no eslint
+# needed, so it's unit-testable.
+eslint_flat_config_root() {
+    local dir="${1:-.}" c
+    for c in eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts; do
+        [ -f "$dir/$c" ] && { printf '%s' "$dir/$c"; return 0; }
+    done
+    return 1
+}

@@ -90,6 +90,7 @@ if [ -f "$OUT_DIR/detection.json" ]; then
         .coverage // empty
         | "**Coverage:** \(.assessedFiles) source files assessed · scope: \(.scope) · excludes via \(.exclusionSource)"
           + (if .narrowed then " · ⚠️ scope NARROWED by CHECKUP_SRC_ROOTS" else "" end)
+          + (if (.unmeasured // []) | length > 0 then " · ⚠️ not measured: " + ((.unmeasured) | join("; ")) else "" end)
     ' "$OUT_DIR/detection.json" 2>/dev/null)
     if [ -n "$COVERAGE_TXT" ]; then
         # Lift "what couldn't run" to the headline (absence-of-coverage is signal,

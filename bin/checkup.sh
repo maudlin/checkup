@@ -293,27 +293,64 @@ fi
 # slice of a non-node-dominant polyglot (so its TS gets AST-grade complexity too)
 # is the symmetric improvement tracked in #73 — it needs a flat-config probe and
 # is out of scope here.
+# ESLint slice gating (#79). The JS/TS complexity slice needs a RESOLVABLE root
+# flat config (the only config `eslint .` finds) AND a way to run ESLint without a
+# silent network fetch. A monorepo whose config lives in a sub-package, or a tree
+# where ESLint isn't installed, must NOT sink the whole complexity record — JS/TS
+# stays honestly UNMEASURED while lizard still covers the non-JS slice. npx fetch
+# policy is mode-aware: tailored (your own repo) may npx; audit (a repo you don't
+# own) never reaches the network.
+ESLINT_CONFIG=$(eslint_flat_config_root "." || true)
+ESLINT_LOCAL_BIN=""; [ -x "node_modules/.bin/eslint" ] && ESLINT_LOCAL_BIN="node_modules/.bin/eslint"
+ESLINT_INVOKE=(); ESLINT_SLICE_OK=false; ESLINT_JSTS_REASON=""
+if [ -n "$NODE_SRC_PROBE" ]; then
+    if [ -z "$ESLINT_CONFIG" ]; then
+        ESLINT_JSTS_REASON="no resolvable root ESLint config"
+    elif [ -n "$ESLINT_LOCAL_BIN" ]; then
+        ESLINT_INVOKE=("$ESLINT_LOCAL_BIN"); ESLINT_SLICE_OK=true
+    elif [ "$CHECKUP_MODE" = "tailored" ] && command -v npx > /dev/null 2>&1; then
+        ESLINT_INVOKE=(npx eslint); ESLINT_SLICE_OK=true
+    else
+        ESLINT_JSTS_REASON="ESLint not installed (not fetched over the network in audit mode)"
+    fi
+fi
+
+# Complexity routing → DETECT_CPLX_ARM (which branch runs) + DETECT_COMPLEXITY_SLICES
+# (which engines merge). CPLX_UNMEASURED records what a node-dominant repo could
+# NOT measure, so the gap is loud (honest coverage, #75/#77) instead of a silent
+# false-pass.
 DETECT_COMPLEXITY_SLICES=""
-if [ "$NODE_DOMINANT" = true ] && [ -n "$NODE_SRC_PROBE" ] && command -v npx > /dev/null 2>&1; then
-    DETECT_COMPLEXITY_SLICES="eslint"
+CPLX_UNMEASURED=()
+if [ "$NODE_DOMINANT" = true ] && [ -n "$NODE_SRC_PROBE" ]; then
+    DETECT_CPLX_ARM="merged"
+    if [ "$ESLINT_SLICE_OK" = true ]; then
+        DETECT_COMPLEXITY_SLICES="eslint"
+    else
+        CPLX_UNMEASURED+=("JS/TS complexity ($ESLINT_JSTS_REASON)")
+    fi
     # Co-run lizard on the non-JS slice when node-dominant repos also carry
     # languages ESLint can't see (Python/C#/Go/…) — otherwise that complexity is
-    # missed entirely (the sharper polyglot gap #68 closes).
+    # missed entirely (#68), and it must survive an unavailable ESLint slice (#79).
     if [ -n "$LIZARD_BIN" ] && [ -n "$NONJS_LIZARD_PROBE" ]; then
-        DETECT_COMPLEXITY_SLICES="eslint lizard"
-        DETECT_ENGINE_COMPLEXITY="eslint+lizard"
-        CPLX_REASON="node dominant → ESLint on the JS/TS slice; lizard on the non-JS source (Python/C#/Go/…) — partitioned by extension, merged into one record"
-    else
-        DETECT_ENGINE_COMPLEXITY="eslint"
-        CPLX_REASON="node is a dominant stack (+ JS/TS source + npx) → ESLint (AST-accurate cyclomatic + cognitive)"
+        DETECT_COMPLEXITY_SLICES="${DETECT_COMPLEXITY_SLICES:+$DETECT_COMPLEXITY_SLICES }lizard"
     fi
+    case "$DETECT_COMPLEXITY_SLICES" in
+        "eslint lizard") DETECT_ENGINE_COMPLEXITY="eslint+lizard"
+            CPLX_REASON="node dominant → ESLint on the JS/TS slice; lizard on the non-JS source (Python/C#/Go/…) — partitioned by extension, merged into one record" ;;
+        "eslint") DETECT_ENGINE_COMPLEXITY="eslint"
+            CPLX_REASON="node is a dominant stack (+ JS/TS source + ESLint config) → ESLint (AST-accurate cyclomatic + cognitive)" ;;
+        "lizard") DETECT_ENGINE_COMPLEXITY="lizard (JS/TS unmeasured)"
+            CPLX_REASON="node dominant but $ESLINT_JSTS_REASON → JS/TS complexity not measured; lizard covers the non-JS source" ;;
+        *) DETECT_ENGINE_COMPLEXITY="none (JS/TS unmeasured)"
+            CPLX_REASON="node dominant but $ESLINT_JSTS_REASON and no non-JS lizard source → complexity not measured" ;;
+    esac
 elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
-    DETECT_COMPLEXITY_SLICES="lizard"
+    DETECT_CPLX_ARM="lizard"; DETECT_COMPLEXITY_SLICES="lizard"
     DETECT_ENGINE_COMPLEXITY="lizard"; CPLX_REASON="lizard-parseable source → lizard (true per-function CCN, multi-language)"
 elif [ -n "$SCC_BIN" ]; then
-    DETECT_ENGINE_COMPLEXITY="scc"; CPLX_REASON="scc fallback (decision-keyword heuristic; the only engine covering Classic ASP)"
+    DETECT_CPLX_ARM="scc"; DETECT_ENGINE_COMPLEXITY="scc"; CPLX_REASON="scc fallback (decision-keyword heuristic; the only engine covering Classic ASP)"
 else
-    DETECT_ENGINE_COMPLEXITY="none"; CPLX_REASON="no complexity engine available (need npx+ESLint, lizard, or scc)"
+    DETECT_CPLX_ARM="none"; DETECT_ENGINE_COMPLEXITY="none"; CPLX_REASON="no complexity engine available (need ESLint config, lizard, or scc)"
 fi
 if [ "$NODE_DOMINANT" = true ] && command -v npm > /dev/null 2>&1; then
     DETECT_ENGINE_DUPLICATION="jscpd"; DUP_REASON="node is a dominant stack (+ npm) → jscpd (exact-token)"
@@ -354,6 +391,9 @@ CPLX_SLICES_JSON=$(printf '%s' "$CPLX_SLICES" | tr ' ' '\n' | jq -R . | jq -s 'm
 COVERAGE_BY_AREA=$(inventory_by_area_json)
 COVERAGE_EXCL=$(inventory_exclusion_source)
 COVERAGE_NARROWED=false; [ -n "${CHECKUP_SRC_ROOTS:-}" ] && COVERAGE_NARROWED=true
+# What a node-dominant repo could NOT measure (e.g. JS/TS complexity when ESLint
+# can't run, #79) — surfaced so the gap is loud, never a silent false-pass.
+COVERAGE_UNMEASURED=$(printf '%s\n' "${CPLX_UNMEASURED[@]}" | jq -R . | jq -s 'map(select(length>0))')
 
 # Persist the plan as an agent-facing artefact (sibling to focus.json/by-file.json
 # — deliberately NOT under parsed/, which the renderer counts as checks).
@@ -367,14 +407,15 @@ jq -n \
     --arg overridden "$CHECKUP_OVERRIDDEN" \
     --argjson assessed "${SOURCE_FILE_COUNT:-0}" \
     --arg scope "${SOURCE_SCOPE:-unknown}" --arg excl "$COVERAGE_EXCL" \
-    --argjson byArea "${COVERAGE_BY_AREA:-{\}}" --argjson narrowed "$COVERAGE_NARROWED" '
-    {schemaVersion:"1.2",
+    --argjson byArea "${COVERAGE_BY_AREA:-{\}}" --argjson narrowed "$COVERAGE_NARROWED" \
+    --argjson unmeasured "${COVERAGE_UNMEASURED:-[]}" '
+    {schemaVersion:"1.3",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
      engines: {complexity:{engine:$ec, reason:$cr, slices:$slices}, duplication:{engine:$ed, reason:$dr}},
-     coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea},
+     coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea, unmeasured:$unmeasured},
      overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
 # Print the plan (drawn from the same values → console and detection.json agree).
@@ -388,6 +429,7 @@ echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs
 COVERAGE_NOTE="   📐 Coverage: ${SOURCE_FILE_COUNT:-0} source files assessed (scope: ${SOURCE_SCOPE:-unknown}, excludes via ${COVERAGE_EXCL})"
 [ "$COVERAGE_NARROWED" = true ] && COVERAGE_NOTE="$COVERAGE_NOTE — NARROWED by CHECKUP_SRC_ROOTS"
 echo -e "$COVERAGE_NOTE"
+[ "${#CPLX_UNMEASURED[@]}" -gt 0 ] && echo -e "   ${YELLOW}⚠️  Not measured:${NC} ${CPLX_UNMEASURED[*]}"
 
 # Apply .checkup.yml check toggles (empties a disabled check's command so its
 # run_profiled call takes the honest skip path; enables opt-in checks) BEFORE the
@@ -1555,25 +1597,34 @@ CPLX_SCC="$SCC_BIN"
 CPLX_LIZARD="$LIZARD_BIN"
 CPLX_ROOTS=("${SCAN_ROOTS[@]}")
 
-if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" = "eslint+lizard" ]; then
-    # Per-language slice routing (#68). ESLint measures the JS/TS slice
-    # (AST-accurate cyclomatic + cognitive); when the detector also routed a
-    # lizard slice (a node-dominant repo that ALSO carries non-JS languages),
-    # lizard measures the rest (Python/C#/Go/…). The two findings sets are
-    # partitioned by file extension — lizard is fenced off the JS/TS extensions
-    # ESLint owns — so no file is counted twice, then merged into ONE record and
-    # ONE Tornhill CSV. With only the ESLint slice the merge collapses to the
-    # historical single-engine output, byte-for-byte (the acceptance gate).
+if [ "$DETECT_CPLX_ARM" = "merged" ]; then
+    # Per-language slice routing (#68/#79). ESLint measures the JS/TS slice
+    # (AST-accurate cyclomatic + cognitive); lizard measures the non-JS rest
+    # (Python/C#/Go/…). Partitioned by extension (no double-count), merged into
+    # ONE record + ONE Tornhill CSV. CRITICAL (#79): the two slices are
+    # INDEPENDENT — if the ESLint slice can't run (no resolvable root config, or
+    # ESLint unavailable), JS/TS stays honestly UNMEASURED but lizard STILL
+    # measures the non-JS slice; an ESLint failure must never sink the whole
+    # record (which previously lost a large non-JS codebase as collateral). The
+    # record fails/skips only when NEITHER slice actually ran. With only the
+    # ESLint slice the merge collapses to the historical single-engine output,
+    # byte-for-byte (the acceptance gate).
+    RUN_ESLINT_SLICE=false
+    case " $DETECT_COMPLEXITY_SLICES " in *" eslint "*) RUN_ESLINT_SLICE=true ;; esac
     RUN_LIZARD_SLICE=false
     case " $DETECT_COMPLEXITY_SLICES " in *" lizard "*) RUN_LIZARD_SLICE=true ;; esac
-    if [ "$RUN_LIZARD_SLICE" = true ]; then
-        CPLX_RECORD_INTENT="$COMPLEXITY_MERGED_INTENT"
-    else
+    # Merged intent whenever JS/TS was EXPECTED (node-dominant + JS/TS present),
+    # even if only lizard produced findings — it explains the split so the reader
+    # understands what's missing. ESLint-only uses the single-engine intent.
+    if [ "$RUN_ESLINT_SLICE" = true ] && [ "$RUN_LIZARD_SLICE" = false ]; then
         CPLX_RECORD_INTENT="$COMPLEXITY_INTENT"
+    else
+        CPLX_RECORD_INTENT="$COMPLEXITY_MERGED_INTENT"
     fi
 
-    echo -e "${GREEN}✅ ESLint available via npx${NC}"
-    [ "$RUN_LIZARD_SLICE" = true ] && echo -e "${GREEN}✅ lizard available — non-JS slice (Python/C#/Go/…)${NC}"
+    [ "$RUN_ESLINT_SLICE" = true ] && echo -e "${GREEN}✅ ESLint — JS/TS slice${NC}"
+    [ "$RUN_LIZARD_SLICE" = true ] && echo -e "${GREEN}✅ lizard — non-JS slice (Python/C#/Go/…)${NC}"
+    [ -n "$ESLINT_JSTS_REASON" ] && echo -e "${YELLOW}⚠️  JS/TS complexity not measured — $ESLINT_JSTS_REASON${NC}"
     echo ""
 
     # ── JS/TS slice (ESLint) ──────────────────────────────────────────────────
@@ -1581,161 +1632,149 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" =
     # eslint.config.js). --rule overrides whatever's in the config for this
     # invocation; the project's flat config is still loaded so parser + plugins
     # work correctly. --no-warn-ignored suppresses noise about ignored files.
-    # Scan the whole tree (SCAN_ROOTS defaults to ".", the canonical `eslint .`
-    # which auto-ignores node_modules and obeys the flat config's own ignores).
-    # This replaces the old raw `${SRC_ROOTS[@]}` which passed a phantom `server`
-    # path on src-only repos and made the check error out (#75). ESLint does not
-    # honour .gitignore, so its findings are filtered back to the VCS inventory
-    # below — the inventory stays the single authority for "what counts".
-    run_tool "Complexity Hotspots" npx eslint \
-        --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
-        --format json --no-warn-ignored \
-        "${SCAN_ROOTS[@]}"
-    ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
-
-    # Graceful degrade (#75): now that we scan the whole tree, the run can include
-    # files whose flat config doesn't register the sonarjs plugin (e.g. a root
-    # eslint.config.js, or a project that simply doesn't use sonarjs) — the
-    # injected cognitive rule then fails to LOAD and the whole run errors. Retry
-    # cyclomatic-only (a built-in rule that can't fail on a missing plugin) so we
-    # still get CCN coverage instead of a total failure. Cognitive is then absent
-    # for this run (JS/TS-only metric, best-effort).
-    if ! is_valid_json "$ESLINT_RAW"; then
-        run_tool "Complexity Hotspots" npx eslint \
-            --rule '{"complexity":["warn",10]}' \
+    # Scans the whole tree (SCAN_ROOTS defaults to "."); ESLint does not honour
+    # .gitignore so its findings are filtered back to the VCS inventory below.
+    # ESLINT_INVOKE is the local binary (or, in tailored mode only, `npx eslint`)
+    # — gated in the detector so an audit run never fetches over the network (#79).
+    ESLINT_FINDINGS='[]'; ESLINT_RAN=false
+    if [ "$RUN_ESLINT_SLICE" = true ]; then
+        run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
+            --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
             --format json --no-warn-ignored \
             "${SCAN_ROOTS[@]}"
         ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
-    fi
 
-    if ! is_valid_json "$ESLINT_RAW"; then
-        echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $ESLINT_EXIT)${NC}"
-        write_failed "complexity" "ESLint produced unparseable JSON (exit $ESLINT_EXIT)" "$CPLX_RECORD_INTENT"
-    else
-        # Normalise to TARGET-relative paths (not repo-root), so a subdirectory
-        # target shares one path namespace with the file-based scanners and the
-        # churn × complexity join in git-hotspots (#15). pwd == $TARGET here.
-        # Filter test/build paths at the JSON layer rather than via
-        # --ignore-pattern. The gating ESLint config still lints these files
-        # for general issues; we only exclude them from complexity *reporting*
-        # because tests legitimately have higher branching (matcher paths) than
-        # production code, and dist/build paths are generated.
-        ESLINT_FINDINGS=$(jq --arg root "$TARGET" '
-            [ .[]
-              | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
-              | .filePath as $fp
-              | .messages[]
-              | select(.ruleId == "complexity" or .ruleId == "sonarjs/cognitive-complexity")
-              # Extract numeric CCN/cognitive score from the message text:
-              #   complexity:           "... has a complexity of N."
-              #   sonarjs/cognitive:    "... reduce its Cognitive Complexity from N to ..."
-              | (.message | capture("(?:complexity of |Complexity from )(?<n>\\d+)").n | tonumber) as $ccn
-              # Extract function name. The two rules emit different formats:
-              #
-              # complexity (ESLint built-in) — quotes a name for declared
-              # functions/methods (Function NAME, Method NAME, Async method
-              # NAME), but emits "Arrow function has a complexity of N" for
-              # anonymous arrow functions / closures (no quoted name).
-              #
-              # sonarjs/cognitive-complexity — never quotes a name. The
-              # message is always "Refactor this function to reduce its
-              # Cognitive Complexity from N to the X allowed."
-              #
-              # COG findings therefore always fall through to (anonymous).
-              # That is fine for the substrate: file + line is the canonical
-              # pointer into source; the function name is a display nicety.
-              # Improving this would require reading the source at .line to
-              # derive the name — high-effort for a small UX gain.
-              | ((.message | capture("'\''(?<name>[^'\'']+)'\''").name) // "(anonymous)") as $fname
-              | ($fp | sub("^" + $root + "/"; "")) as $rel
-              | (if .ruleId == "sonarjs/cognitive-complexity" then "COG" else "CCN" end) as $kind
-              | {
-                  file: $rel,
-                  line: .line,
-                  ccn: $ccn,
-                  code: ($kind + "-" + ($ccn | tostring)),
-                  severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
-                  message: ($fname + " — " + (if $kind == "COG" then "cognitive complexity " else "CCN " end) + ($ccn | tostring))
-                }
-            ]
-        ' "$ESLINT_RAW")
-
-        # Keep only findings in the VCS-tracked inventory (#75). ESLint traverses
-        # the tree itself and does not honour .gitignore, so any generated/ignored
-        # file it happened to lint is dropped here — the inventory is the single
-        # authority for "what counts", and this also re-applies the src→tree scope
-        # change without ESLint erroring on files that match no flat-config entry.
-        ESLINT_FINDINGS=$(echo "$ESLINT_FINDINGS" \
-            | jq --argjson keep "$(inventory_json "$INV_JSTS_RE")" \
-                 '[ .[] | select(.file as $f | $keep | index($f) != null) ]')
-
-        # ── non-JS slice (lizard) ────────────────────────────────────────────
-        # Fed the non-JS subset of the tracked inventory (#75): partitioned by
-        # extension so no file ESLint owns is re-measured, and (unlike a root
-        # scan) lizard never ingests gitignored/generated files. A lizard failure
-        # here does NOT sink the section — the dominant JS/TS slice already
-        # produced valid findings — so we warn and continue with an empty non-JS
-        # slice (honest partial coverage), unlike the standalone lizard tier which
-        # write_failed's.
-        LIZARD_FINDINGS='[]'
-        if [ "$RUN_LIZARD_SLICE" = true ]; then
-            mapfile -d '' NONJS_FILES < <(inventory_paths "$INV_NONJS_RE")
-            run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${NONJS_FILES[@]}"
-            if [ ! -s "$LAST_RAW" ]; then
-                echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT) — JS/TS coverage stands${NC}"
-            else
-                # Same CSV parse as the standalone lizard tier (cols 2/6/7/8
-                # pre-comma-safe; ccn ≥ 10; test/build filtered).
-                LIZARD_FINDINGS=$(jq -R -s --arg root "$TARGET" '
-                    def unq: gsub("^\"|\"$"; "");
-                    [ split("\n")[]
-                      | select(length > 0)
-                      | split(",") as $f
-                      | select(($f | length) >= 11)
-                      | ($f[1] | tonumber) as $ccn
-                      | ($f[5] | unq) as $loc
-                      | ($f[6] | unq) as $file
-                      | ($f[7] | unq) as $fname
-                      | select($ccn >= 10)
-                      | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
-                      | {
-                          file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
-                          line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
-                          ccn: $ccn,
-                          code: ("CCN-" + ($ccn | tostring)),
-                          severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
-                          message: ($fname + " — CCN " + ($ccn | tostring))
-                        }
-                    ]
-                ' "$LAST_RAW")
-            fi
+        # Graceful degrade (#75): a whole-tree scan can include files whose flat
+        # config doesn't register the sonarjs plugin — the injected cognitive rule
+        # then fails to LOAD and the run errors. Retry cyclomatic-only (a built-in
+        # rule that can't fail on a missing plugin). Cognitive is then absent for
+        # this run (JS/TS-only metric, best-effort).
+        if ! is_valid_json "$ESLINT_RAW"; then
+            run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
+                --rule '{"complexity":["warn",10]}' \
+                --format json --no-warn-ignored \
+                "${SCAN_ROOTS[@]}"
+            ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
         fi
 
-        # Merge the slices (disjoint by extension → no dedup) and fold to the
-        # shared record fields via the one-source-of-truth transform.
-        ALL_FINDINGS=$(jq -n --argjson a "$ESLINT_FINDINGS" --argjson b "$LIZARD_FINDINGS" '$a + $b')
+        if is_valid_json "$ESLINT_RAW"; then
+            # Normalise to TARGET-relative paths; filter test/build paths at the
+            # JSON layer (tests legitimately branch more; dist/build is generated).
+            ESLINT_FINDINGS=$(jq --arg root "$TARGET" '
+                [ .[]
+                  | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
+                  | .filePath as $fp
+                  | .messages[]
+                  | select(.ruleId == "complexity" or .ruleId == "sonarjs/cognitive-complexity")
+                  | (.message | capture("(?:complexity of |Complexity from )(?<n>\\d+)").n | tonumber) as $ccn
+                  | ((.message | capture("'\''(?<name>[^'\'']+)'\''").name) // "(anonymous)") as $fname
+                  | ($fp | sub("^" + $root + "/"; "")) as $rel
+                  | (if .ruleId == "sonarjs/cognitive-complexity" then "COG" else "CCN" end) as $kind
+                  | {
+                      file: $rel,
+                      line: .line,
+                      ccn: $ccn,
+                      code: ($kind + "-" + ($ccn | tostring)),
+                      severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                      message: ($fname + " — " + (if $kind == "COG" then "cognitive complexity " else "CCN " end) + ($ccn | tostring))
+                    }
+                ]
+            ' "$ESLINT_RAW")
+            # Keep only findings in the VCS-tracked inventory (#75) — the single
+            # authority for "what counts"; drops any gitignored file ESLint linted.
+            # --slurpfile via process substitution (NOT --argjson "$(...)"): on a
+            # large JS/TS slice the inventory JSON exceeds the 128 KB per-argv cap
+            # (MAX_ARG_STRLEN) and jq dies "Argument list too long" (#79).
+            ESLINT_FINDINGS=$(echo "$ESLINT_FINDINGS" \
+                | jq --slurpfile keep <(inventory_json "$INV_JSTS_RE") \
+                     '[ .[] | select(.file as $f | ($keep[0] | index($f)) != null) ]')
+            ESLINT_RAN=true
+        else
+            # Degrade, don't sink the record (#79): warn and continue — lizard (if
+            # routed) still measures the non-JS slice.
+            echo -e "${YELLOW}⚠️  ESLint produced unparseable JSON (exit $ESLINT_EXIT) — JS/TS slice not measured; continuing${NC}"
+        fi
+    fi
+
+    # ── non-JS slice (lizard) ────────────────────────────────────────────────
+    # Fed the non-JS subset of the tracked inventory (#75): partitioned by
+    # extension so no file ESLint owns is re-measured, and (unlike a root scan)
+    # lizard never ingests gitignored/generated files.
+    LIZARD_FINDINGS='[]'; LIZARD_RAN=false
+    if [ "$RUN_LIZARD_SLICE" = true ]; then
+        mapfile -d '' NONJS_FILES < <(inventory_paths "$INV_NONJS_RE")
+        run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${NONJS_FILES[@]}"
+        if [ ! -s "$LAST_RAW" ]; then
+            echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT)${NC}"
+        else
+            LIZARD_FINDINGS=$(jq -R -s --arg root "$TARGET" '
+                def unq: gsub("^\"|\"$"; "");
+                [ split("\n")[]
+                  | select(length > 0)
+                  | split(",") as $f
+                  | select(($f | length) >= 11)
+                  | ($f[1] | tonumber) as $ccn
+                  | ($f[5] | unq) as $loc
+                  | ($f[6] | unq) as $file
+                  | ($f[7] | unq) as $fname
+                  | select($ccn >= 10)
+                  | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
+                  | {
+                      file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
+                      line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
+                      ccn: $ccn,
+                      code: ("CCN-" + ($ccn | tostring)),
+                      severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                      message: ($fname + " — CCN " + ($ccn | tostring))
+                    }
+                ]
+            ' "$LAST_RAW")
+            LIZARD_RAN=true
+        fi
+    fi
+
+    # Build the honest "JS/TS not measured" note (detector-time: slice not routed;
+    # runtime: ESLint attempted but produced nothing usable).
+    CPLX_JSTS_UNMEASURED=""
+    if [ "$RUN_ESLINT_SLICE" = false ] && [ -n "$NODE_SRC_PROBE" ]; then
+        CPLX_JSTS_UNMEASURED="$ESLINT_JSTS_REASON"
+    elif [ "$RUN_ESLINT_SLICE" = true ] && [ "$ESLINT_RAN" = false ]; then
+        CPLX_JSTS_UNMEASURED="ESLint produced unparseable JSON (exit ${ESLINT_EXIT:-?})"
+    fi
+    CPLX_SUFFIX=""
+    [ -n "$CPLX_JSTS_UNMEASURED" ] && CPLX_SUFFIX=" · JS/TS complexity not measured ($CPLX_JSTS_UNMEASURED)"
+
+    if [ "$ESLINT_RAN" = false ] && [ "$LIZARD_RAN" = false ]; then
+        # Nothing measured. Distinguish tried-and-failed (a slice was routed but
+        # produced nothing usable → write_failed) from deliberately-not-run (no
+        # slice routable → honest skip with reason).
+        if [ "$RUN_ESLINT_SLICE" = true ] || [ "$RUN_LIZARD_SLICE" = true ]; then
+            echo -e "${YELLOW}⚠️  complexity not measured (engines ran but produced nothing usable)${NC}"
+            write_failed "complexity" "complexity not measured${CPLX_SUFFIX}" "$CPLX_RECORD_INTENT"
+        else
+            echo -e "${YELLOW}ℹ️  complexity not measured — ${CPLX_JSTS_UNMEASURED:-no engine could run}${NC}"
+            write_skipped "complexity" "complexity not measured — ${CPLX_JSTS_UNMEASURED:-no engine could run}" "$CPLX_RECORD_INTENT"
+        fi
+    else
+        # At least one slice measured → an honest pass/warn/fail over what we have.
+        # Concatenate via process substitution (NOT --argjson "$BIG"): a large
+        # non-JS findings array exceeds the 128 KB per-argv cap and jq would die
+        # "Argument list too long" on a big polyglot like a Java monorepo (#79).
+        ALL_FINDINGS=$(jq -s 'add' <(printf '%s' "$ESLINT_FINDINGS") <(printf '%s' "$LIZARD_FINDINGS"))
         CPLX_MERGED=$(echo "$ALL_FINDINGS" | jq -f "$CHECKUP_HOME/lib/complexity-merge.jq")
         TOTAL_COUNT=$(echo "$CPLX_MERGED" | jq '.count')
 
-        # Reset the Tornhill-input CSV ahead of the branching. If we don't
-        # truncate, a previous dirty run leaves stale CCN rows behind that
-        # the git-hotspots section will happily consume on a subsequent
-        # clean run. The lizard implementation always overwrote via `cp`,
-        # so this matches the prior contract.
         mkdir -p "$OUT_DIR"
         : > "$OUT_DIR/complexity-full.csv"
 
         if [ "$TOTAL_COUNT" -eq 0 ]; then
             echo -e "${GREEN}✅ No functions over CCN 10 / cognitive 15${NC}"
-            write_parsed "complexity" "pass" 0 "No hotspots over CCN 10 / cognitive 15" '[]' "$CPLX_RECORD_INTENT"
+            write_parsed "complexity" "pass" 0 "No hotspots over CCN 10 / cognitive 15${CPLX_SUFFIX}" '[]' "$CPLX_RECORD_INTENT"
         else
-            # Top 20 by descending score; the public top[] sheds the internal
-            # .ccn sort key so the substrate schema stays clean.
             TOP_FINDINGS=$(echo "$CPLX_MERGED" | jq '.top')
             HIGHEST_CCN=$(echo "$CPLX_MERGED" | jq '.highest')
             STATUS=$(echo "$CPLX_MERGED" | jq -r '.status')
 
-            # Terminal display
             printf "%-7s %-50s %s\n" "Score" "Function" "Location"
             echo "----------------------------------------------------------------------------------------"
             echo "$TOP_FINDINGS" | jq -r '
@@ -1744,18 +1783,9 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" =
             echo ""
             echo -e "${BLUE}📈 Summary:${NC} $TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 shown, highest $HIGHEST_CCN)"
 
-            # Write Tornhill-compatible CSV from the cyclomatic findings only —
-            # cognitive is a separate metric and would skew column-2 "CCN" reads
-            # in the git-hotspots section (which expects radon-style CCN). Both
-            # slices contribute CCN- rows in the same layout:
-            #   NLOC, CCN, token, params, length, function_id, file,
-            #   function_name, signature, start_line, end_line
-            # Tornhill (section 19) reads only columns 2 (CCN) and 7 (file);
-            # the rest are zero-padded. The partition is disjoint, so no file
-            # appears twice; even if it did, the git-hotspots max-per-file join
-            # is idempotent.
-            # NB: the CSV is truncated ahead of the if-else above; this is the
-            # only branch that populates it.
+            # Tornhill CSV from cyclomatic findings only (cognitive would skew the
+            # col-2 CCN the git-hotspots join reads). Both slices share the layout;
+            # the partition is disjoint so no file appears twice.
             {
                 echo "$ESLINT_FINDINGS" | jq -r --arg prefix eslint -f "$CHECKUP_HOME/lib/complexity-csv.jq"
                 if [ "$RUN_LIZARD_SLICE" = true ]; then
@@ -1764,11 +1794,11 @@ if [ "$DETECT_ENGINE_COMPLEXITY" = "eslint" ] || [ "$DETECT_ENGINE_COMPLEXITY" =
             } > "$OUT_DIR/complexity-full.csv"
 
             write_parsed "complexity" "$STATUS" "$TOTAL_COUNT" \
-                "$TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 reported, highest score $HIGHEST_CCN)" \
+                "$TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 reported, highest score $HIGHEST_CCN)${CPLX_SUFFIX}" \
                 "$TOP_FINDINGS" "$CPLX_RECORD_INTENT"
         fi
     fi
-elif [ "$DETECT_ENGINE_COMPLEXITY" = "lizard" ]; then
+elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
     echo -e "${GREEN}✅ lizard available — true multi-language complexity${NC}"
     echo ""
 
@@ -1852,7 +1882,7 @@ elif [ "$DETECT_ENGINE_COMPLEXITY" = "lizard" ]; then
                 "$TOP_FINDINGS" "$LIZARD_INTENT"
         fi
     fi
-elif [ "$DETECT_ENGINE_COMPLEXITY" = "scc" ]; then
+elif [ "$DETECT_CPLX_ARM" = "scc" ]; then
     echo -e "${GREEN}✅ scc available — language-agnostic complexity${NC}"
     echo ""
 
