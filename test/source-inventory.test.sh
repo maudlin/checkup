@@ -78,6 +78,14 @@ mkdir -p "$TMP/src" "$TMP/services"
 ( cd "$TMP"; CHECKUP_SRC_ROOTS="src services"; resolve_scan_roots; assert_eq "override → existing dirs" "src services" "${SCAN_ROOTS[*]}" )
 ( cd "$TMP"; CHECKUP_SRC_ROOTS="src nope"; resolve_scan_roots; assert_eq "override drops missing dirs" "src" "${SCAN_ROOTS[*]}" )
 ( cd "$TMP"; CHECKUP_SRC_ROOTS="none here"; resolve_scan_roots; assert_eq "all-missing override → whole-tree fallback" "." "${SCAN_ROOTS[*]}" )
+# Regression: the orchestrator runs under `set -e`, so resolve_scan_roots must
+# return 0 even when its final test is false (override matched → array non-empty).
+# Otherwise the whole run dies silently the moment a user sets CHECKUP_SRC_ROOTS.
+if ( set -e; cd "$TMP"; CHECKUP_SRC_ROOTS="src"; resolve_scan_roots ); then
+    ok "returns 0 under set -e with a matching override"
+else
+    notok "returns 0 under set -e with a matching override (set -e would kill the run)"
+fi
 
 echo ""
 echo "slice regexes partition JS/TS vs non-JS with no overlap"
@@ -104,6 +112,17 @@ if command -v git > /dev/null 2>&1; then
 else
     echo "  ⊘ skipped — git not installed"
 fi
+
+echo ""
+echo "coverage helpers: by-area grouping and exclusion-source label"
+SOURCE_LST="$TMP/cov.lst"
+printf 'src/a.ts\0src/b.ts\0scripts/c.py\0root.ts\0' > "$SOURCE_LST"
+assert_eq "by-area groups by top dir, <root> for root files" \
+    '{"<root>":1,"scripts":1,"src":2}' \
+    "$(inventory_by_area_json | jq -cS .)"
+assert_eq "git scope → .gitignore"        ".gitignore"               "$(SOURCE_SCOPE=git inventory_exclusion_source)"
+assert_eq "override:git scope → .gitignore" ".gitignore"             "$(SOURCE_SCOPE=override:git inventory_exclusion_source)"
+assert_eq "find scope → builtin excludes"  "builtin excludes (no VCS)" "$(SOURCE_SCOPE=find inventory_exclusion_source)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -131,7 +131,7 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 
 ```jsonc
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "primary": "node",                 // largest stack, or null when ambiguous
   "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
   "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
@@ -145,9 +145,22 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
     "complexity": { "engine", "reason", "slices": [ … ] },
     "duplication": { "engine", "reason" }
   },
+  // What checkup actually assessed (#75), so a clean result can't hide a partial
+  // scan. assessedFiles = tracked source enumerated from the VCS; scope = how it
+  // was enumerated (git | fd | find | override:<tier>); exclusionSource = whose
+  // rules dropped the rest (.gitignore vs builtin); byArea = files per top-level
+  // dir; narrowed = true when CHECKUP_SRC_ROOTS restricted the scope.
+  "coverage": {
+    "assessedFiles": 412, "scope": "git", "exclusionSource": ".gitignore",
+    "narrowed": false, "byArea": { "src": 280, "server": 110, "scripts": 22 }
+  },
   "overridden": false                // true when a repo-local `.checkup.yml` steered detection
 }
 ```
+
+The coverage block is lifted to the report headline and the console (console ==
+artefact), including how many checks couldn't run — making absence of coverage a
+loud, first-class signal rather than a silent skip (#51).
 
 When a node-dominant repo also carries languages ESLint can't see (Python, C#,
 Go, …), complexity runs **per language slice and merges**: ESLint measures the

@@ -79,6 +79,26 @@ WARN=$(jq -s 'map(select(.status=="warn")) | length' "${PARSED_FILES[@]}")
 FAIL=$(jq -s 'map(select(.status=="fail")) | length' "${PARSED_FILES[@]}")
 SKIP=$(jq -s 'map(select(.status=="skip")) | length' "${PARSED_FILES[@]}")
 
+# Coverage signal (#75) — surfaced at the headline so a reader can never mistake
+# "checkup didn't look" for "nothing's there". detection.json is an optional
+# run-level sidecar (like checkup-summary.json above), NOT a parsed/<slug>.json
+# check, so reading it here doesn't change the tool-agnostic check contract; an
+# old run without it simply renders no coverage line.
+COVERAGE_MD=""
+if [ -f "$OUT_DIR/detection.json" ]; then
+    COVERAGE_TXT=$(jq -r '
+        .coverage // empty
+        | "**Coverage:** \(.assessedFiles) source files assessed · scope: \(.scope) · excludes via \(.exclusionSource)"
+          + (if .narrowed then " · ⚠️ scope NARROWED by CHECKUP_SRC_ROOTS" else "" end)
+    ' "$OUT_DIR/detection.json" 2>/dev/null)
+    if [ -n "$COVERAGE_TXT" ]; then
+        # Lift "what couldn't run" to the headline (absence-of-coverage is signal,
+        # #51): the per-check summaries say why each skipped.
+        [ "$SKIP" -gt 0 ] && COVERAGE_TXT="$COVERAGE_TXT · $SKIP check(s) didn't run (see Summary)"
+        COVERAGE_MD="> $COVERAGE_TXT"
+    fi
+fi
+
 # Top Problems aggregate — flat list across all tools, severity-weighted,
 # max 3 per tool to prevent a wide check (e.g. lint with 472 warnings) from
 # dominating, total cap 30 so the list is scannable.
@@ -485,6 +505,7 @@ render_report() {
 # Application Checkup Report
 
 > **Overall: $OVERALL_VERDICT** · **Mode:** $CHECKUP_MODE · **Generated:** $TIMESTAMP
+$COVERAGE_MD
 
 $OVERALL_GESTALT
 

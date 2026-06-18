@@ -84,6 +84,7 @@ resolve_scan_roots() {
         for r in "${requested[@]}"; do [ -d "$r" ] && SCAN_ROOTS+=("$r"); done
     fi
     [ "${#SCAN_ROOTS[@]}" -eq 0 ] && SCAN_ROOTS=(".")
+    return 0   # never let a false final test trip `set -e` in the caller
 }
 
 # Build the inventory. Writes $RAW_DIR/source-files.lst (NUL-delimited), sets
@@ -125,4 +126,28 @@ inventory_paths() {
 # back to the tracked set (e.g. ESLint, which traverses on its own).
 inventory_json() {
     inventory_paths "${1:-}" | jq -Rs 'split("\u0000") | map(select(length > 0))'
+}
+
+# The inventory grouped by top-level directory -> JSON object {area: count}, for
+# the coverage signal (#75). Root-level files roll up under "<root>". NUL list is
+# converted to newlines first (paths with embedded newlines are vanishingly rare
+# and only affect this display grouping, never measurement).
+inventory_by_area_json() {
+    inventory_paths "" | tr '\0' '\n' | jq -R -s '
+        split("\n") | map(select(length > 0))
+        | group_by(if contains("/") then split("/")[0] else "<root>" end)
+        | map({ key: (.[0] | if contains("/") then split("/")[0] else "<root>" end),
+                value: length })
+        | from_entries'
+}
+
+# Where the inventory got its exclusions from, for honest reporting. git/fd
+# honour the repo's .gitignore; the find fallback only has checkup's builtin
+# vendored/generated globs.
+inventory_exclusion_source() {
+    case "${SOURCE_SCOPE:-}" in
+        *git)  echo ".gitignore" ;;
+        *fd)   echo ".gitignore + .ignore" ;;
+        *)     echo "builtin excludes (no VCS)" ;;
+    esac
 }
