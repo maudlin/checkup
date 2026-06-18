@@ -349,6 +349,12 @@ CPLX_SLICES="$DETECT_COMPLEXITY_SLICES"
 [ -z "$CPLX_SLICES" ] && [ "$DETECT_ENGINE_COMPLEXITY" = "scc" ] && CPLX_SLICES="scc"
 CPLX_SLICES_JSON=$(printf '%s' "$CPLX_SLICES" | tr ' ' '\n' | jq -R . | jq -s 'map(select(length>0))')
 
+# Coverage signal (#75): what checkup actually assessed, so a clean result can
+# never hide a partial scan. Drawn from the source inventory built up front.
+COVERAGE_BY_AREA=$(inventory_by_area_json)
+COVERAGE_EXCL=$(inventory_exclusion_source)
+COVERAGE_NARROWED=false; [ -n "${CHECKUP_SRC_ROOTS:-}" ] && COVERAGE_NARROWED=true
+
 # Persist the plan as an agent-facing artefact (sibling to focus.json/by-file.json
 # — deliberately NOT under parsed/, which the renderer counts as checks).
 jq -n \
@@ -358,13 +364,17 @@ jq -n \
     --arg ec "$DETECT_ENGINE_COMPLEXITY" --arg ed "$DETECT_ENGINE_DUPLICATION" \
     --argjson slices "$CPLX_SLICES_JSON" \
     --arg cr "$CPLX_REASON" --arg dr "$DUP_REASON" --arg sccok "$SCC_OK" \
-    --arg overridden "$CHECKUP_OVERRIDDEN" '
-    {schemaVersion:"1.1",
+    --arg overridden "$CHECKUP_OVERRIDDEN" \
+    --argjson assessed "${SOURCE_FILE_COUNT:-0}" \
+    --arg scope "${SOURCE_SCOPE:-unknown}" --arg excl "$COVERAGE_EXCL" \
+    --argjson byArea "${COVERAGE_BY_AREA:-{\}}" --argjson narrowed "$COVERAGE_NARROWED" '
+    {schemaVersion:"1.2",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
      engines: {complexity:{engine:$ec, reason:$cr, slices:$slices}, duplication:{engine:$ed, reason:$dr}},
+     coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea},
      overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
 # Print the plan (drawn from the same values → console and detection.json agree).
@@ -375,6 +385,9 @@ echo -e "${BLUE}🔎 Detected:${NC} ${DETECT_SUMMARY}${MANIFEST_STR}"
 echo -e "   Primary: ${DETECT_PRIMARY:-unknown} (${DETECT_PRIMARY_CONFIDENCE} confidence)"
 echo -e "   Complexity engine → ${DETECT_ENGINE_COMPLEXITY}  ·  Duplication engine → ${DETECT_ENGINE_DUPLICATION}"
 echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs, test-presence, tech-viability)"
+COVERAGE_NOTE="   📐 Coverage: ${SOURCE_FILE_COUNT:-0} source files assessed (scope: ${SOURCE_SCOPE:-unknown}, excludes via ${COVERAGE_EXCL})"
+[ "$COVERAGE_NARROWED" = true ] && COVERAGE_NOTE="$COVERAGE_NOTE — NARROWED by CHECKUP_SRC_ROOTS"
+echo -e "$COVERAGE_NOTE"
 
 # Apply .checkup.yml check toggles (empties a disabled check's command so its
 # run_profiled call takes the honest skip path; enables opt-in checks) BEFORE the
