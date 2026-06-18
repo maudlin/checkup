@@ -76,14 +76,21 @@ echo 'run_tool — `npm run <missing-script>` is promoted to LAST_EXIT=127'
 # the missing wire-up as a real finding.
 FAKE_PATH="$TMP/fake-npm-bin"
 mkdir -p "$FAKE_PATH"
-cat > "$FAKE_PATH/npm" <<'NPMEOF'
+# Cover BOTH npm diagnostic formats — npm < 9 ("npm ERR! Missing script") and
+# npm ≥ 9 ("npm error Missing script"). Keying only on the old prefix regressed
+# silently on modern npm and reported a fail on any package.json without the
+# script (#80); both must promote to the honest skip path.
+for fmt in 'npm ERR! Missing script: "missing-fixture-script"' \
+           'npm error Missing script: "missing-fixture-script"'; do
+    cat > "$FAKE_PATH/npm" <<NPMEOF
 #!/bin/bash
-echo "npm ERR! Missing script: \"missing-fixture-script\"" >&2
+echo '$fmt' >&2
 exit 1
 NPMEOF
-chmod +x "$FAKE_PATH/npm"
-PATH="$FAKE_PATH:$PATH" run_tool "Fake NPM Missing" npm run missing-fixture-script >/dev/null
-assert_eq "missing npm script → LAST_EXIT=127" "127" "$LAST_EXIT"
+    chmod +x "$FAKE_PATH/npm"
+    PATH="$FAKE_PATH:$PATH" run_tool "Fake NPM Missing" npm run missing-fixture-script >/dev/null
+    assert_eq "missing npm script ($fmt) → LAST_EXIT=127" "127" "$LAST_EXIT"
+done
 
 echo ""
 echo "run_tool — npm exit-1 WITHOUT 'Missing script' is left unchanged"

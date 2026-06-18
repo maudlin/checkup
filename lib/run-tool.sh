@@ -105,9 +105,13 @@ run_tool() {
     # the lack of output as a real failure — both wrong. Promoting to 127
     # routes the call through the section's existing graceful-degrade path
     # ("tool not installed" — close enough; the underlying issue is "this
-    # check isn't wired up in your package.json yet").
+    # check isn't wired up in your package.json yet"). Match the message
+    # regardless of npm's version prefix: npm < 9 prints "npm ERR! Missing
+    # script", npm ≥ 9 prints "npm error Missing script" — keying on the old
+    # prefix silently regressed on modern npm, reporting the check as a real
+    # `fail` on any repo with a package.json but no such script (#80).
     if [ "$LAST_EXIT" != "0" ] && [ -s "$LAST_STDERR" ] \
-        && grep -q "npm ERR! Missing script" "$LAST_STDERR" 2>/dev/null; then
+        && grep -qE 'Missing script' "$LAST_STDERR" 2>/dev/null; then
         LAST_EXIT=127
     fi
 

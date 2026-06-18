@@ -461,8 +461,8 @@ TS_INTENT=$(jq -n '{
 
 run_profiled TYPECHECK "TypeScript Type Checking"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "typecheck" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$TS_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "typecheck" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$TS_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 25))
 if [ "$LAST_EXIT" = "0" ]; then
@@ -526,8 +526,8 @@ UT_INTENT=$(jq -n '{
 
 run_profiled TEST "Unit Tests"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "unit-tests" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$UT_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "unit-tests" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$UT_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 30))
 # Vitest's summary uses ANSI; strip before regex.
@@ -597,8 +597,8 @@ CQ_INTENT=$(jq -n '{
 # Formatting — binary outcome
 run_profiled FORMAT "Code Quality Format"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "code-quality" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$CQ_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "code-quality" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$CQ_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 15))
 FORMAT_OK="true"
@@ -709,8 +709,8 @@ if [ ! -f eslint.config.type-aware.js ]; then
 else
 run_profiled TYPEAWARE "Type-Aware Lint Rules"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npx not on PATH${NC}"
-    write_skipped "type-aware-lint" "Node-stack check skipped — no package.json at the target, or npx not on PATH" "$TAL_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npx not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "type-aware-lint" "Node-stack check skipped — no package.json, npx not on PATH, or the npm script isn't defined" "$TAL_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 
@@ -821,8 +821,8 @@ BUILD_INTENT=$(jq -n '{
 
 run_profiled BUILD "Production Build"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "build" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$BUILD_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "build" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$BUILD_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 20))
 if [ "$LAST_EXIT" = "0" ]; then
@@ -943,8 +943,8 @@ AUDIT_INTENT=$(jq -n '{
 
 run_profiled AUDIT "Security Vulnerabilities"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "npm-audit" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$AUDIT_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "npm-audit" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$AUDIT_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 10))
 # npm audit exits non-zero (1) when any advisory exists. That's expected;
@@ -1021,8 +1021,8 @@ DEPS_INTENT=$(jq -n '{
 
 run_profiled OUTDATED "Dependency Freshness"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "deps-freshness" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$DEPS_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "deps-freshness" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$DEPS_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # npm outdated exits 1 when outdated packages exist (expected); empty output
@@ -1090,8 +1090,8 @@ MADGE_INTENT=$(jq -n '{
 MADGE_MARKER="$RAW_DIR/.circular-deps.marker"; : > "$MADGE_MARKER"
 run_profiled DEPS "Circular Dependencies"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "circular-deps" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$MADGE_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "circular-deps" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$MADGE_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # Trust only a report this run produced — a stale reports/madge-circular.json
@@ -1306,8 +1306,8 @@ KNIP_INTENT=$(jq -n '{
 
 run_profiled UNUSED "Unused Code Detection"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "unused-code" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$KNIP_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "unused-code" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$KNIP_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 KNIP_OUTPUT=$(cat "$LAST_RAW")
@@ -1405,8 +1405,8 @@ COVERAGE_INTENT=$(jq -n '{
 COV_MARKER="$RAW_DIR/.coverage.marker"; : > "$COV_MARKER"
 run_profiled COVERAGE "Test Coverage"
 if toolchain_absent; then
-    echo -e "${BLUE}ℹ️  Skipped — no package.json at the target, or npm not on PATH${NC}"
-    write_skipped "coverage" "Node-stack check skipped — no package.json at the target, or npm not on PATH" "$COVERAGE_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the npm script isn't defined${NC}"
+    write_skipped "coverage" "Node-stack check skipped — no package.json, npm not on PATH, or the npm script isn't defined" "$COVERAGE_INTENT"
 else
 MAX_SCORE=$((MAX_SCORE + 5))
 # Trust only a summary this run produced — a stale coverage/coverage-summary.json
