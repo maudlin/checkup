@@ -232,17 +232,17 @@ config files existing.
 The substrate is more language-agnostic than the npm-script defaults suggest.
 The following all work unchanged on any stack:
 
-- **Complexity** — the default uses ESLint's `complexity` +
-  `sonarjs/cognitive-complexity` in reporter mode (AST-aware via
-  typescript-eslint). For non-TS stacks, the shape is portable: `lizard`
-  natively parses C, C++, Java, JS, Python, Ruby, Rust, Go, Swift, Kotlin, Lua,
-  Scala, PHP, Objective-C, etc.; `radon` covers Python in more depth; `mccabe`
-  / `cyclonedx` etc. are language-specific alternatives. Replace the ESLint
-  invocation in the section with whichever produces per-function `(file, line,
-name, score)` and the rest of the substrate carries it through. The default
-  moved off lizard because lizard's state-machine TS parser mis-attributes
-  class-method CCN to the first top-level function before a class — fine for
-  non-TS, broken for TS-heavy codebases.
+- **Complexity** — **auto-routed by the detected stack** (no manual swap): ESLint
+  (`complexity` + `sonarjs/cognitive-complexity`, AST-aware via typescript-eslint)
+  on the JS/TS slice of a node-dominant repo; `lizard` (true per-function CCN
+  across C, C++, Java, JS, Python, Ruby, Rust, Go, Swift, Kotlin, Lua, Scala, PHP,
+  Objective-C, …) on every other stack — and on the *non-JS slice* of a polyglot
+  repo, merged with the ESLint slice into one record; `scc`'s heuristic as the
+  universal fallback (e.g. Classic ASP). All emit the same per-function CSV the
+  `git-hotspots` join consumes, so churn × complexity works on any stack. ESLint
+  is preferred for TS because `lizard`'s state-machine TS parser mis-attributes
+  class-method CCN; when ESLint can't run, that slice is reported as *unmeasured*
+  rather than silently downgraded.
 - **Stats** — `scc` covers ~150 languages.
 - **Security** — `gitleaks` is content-based (not language-aware); `semgrep`
   has community rulesets for most major languages.
@@ -283,7 +283,7 @@ finding shape and the rest of the substrate carries it through unchanged.
 | --------------------- | ----------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `CHECKUP_TARGET`      | path resolution (`checkup.sh` + renderer) | enclosing git repo, else `$PWD`          | Explicit project root to scan, instead of auto-detecting from the git top level. For one service in a monorepo, see [Scanning a monorepo subdirectory](#scanning-a-monorepo-subdirectory). |
 | `CHECKUP_MODE`        | closing verdict (`checkup.sh` + renderer) | `tailored`                               | `tailored` (a repo you own & tune): verdict framed for your own codebase ("where to focus next"); a low score exits non-zero as a quality signal you may act on — not a deploy gate. `audit` (a repo you don't own / due diligence): informational only, framed as "where to invest", **always exits 0**. checkup never gates ([ADR-0009](docs/decisions/0009-deterministic-health-localiser.md)). |
-| `CHECKUP_SRC_ROOTS`   | complexity + git-axis sections            | `src server`                             | Space-separated source roots for the git-forensics and complexity scans (e.g. `app cmd`). |
+| `CHECKUP_SRC_ROOTS`   | complexity + git-axis sections            | whole tree (VCS-tracked source)          | NARROWS the complexity + git-forensics scan to specific space-separated roots (e.g. `app cmd`). By default checkup assesses **all** VCS-tracked source ([honest coverage](docs/architecture.md)); set this only to focus the scan or speed up a very large monorepo. |
 | `CHECKUP_FORENSIC_SINCE` | git-axis sections                      | `6.months.ago`                           | `git log --since` window for hotspots / change-coupling / bug-fix-density. Widen (e.g. `2.years.ago`) for repos with sparse recent history; an empty window degrades to `skip`, never a false `pass`. |
 | `CHECKUP_EXCLUDE`     | lizard complexity + duplication scans     | unset                                    | Extra space-separated fnmatch globs excluded from the lizard scans, on top of the built-in generated/vendored defaults (node_modules, migrations, snapshots, `*.min.*`, …).                 |
 | `CHECKUP_SHELL_DIRS`  | `shellcheck` section                      | `scripts .husky .githooks .claude/hooks` | Space-separated dirs to search for shell scripts. Missing dirs are skipped silently.      |
