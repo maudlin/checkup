@@ -21,6 +21,11 @@ across the whole thing, honestly*.
   #58–#59).
 - **Agent-first output contract:** a versioned `checkup.json` bundle an agent
   reads first; "priming an agent" docs (#54, #60–#62).
+- **Executive-summary recipe** — a portable prompt that synthesises a run into a
+  calibrated CTO-level brief (what-it-is / risk posture / dominant unknown /
+  confidence / effort-to-de-risk / recommendation), with report-only vs
+  source-aware modes and a prominent privacy flag (source to a hosted LLM breaks
+  the deterministic scan's deny-egress property, ADR-0008) (#89).
 - **Stack auto-detection** (`detection.json`) that routes the complexity /
   duplication engines by the detected stack (#7, #67).
 - **Per-language complexity for polyglot repos** — ESLint on the JS/TS slice +
