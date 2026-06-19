@@ -42,6 +42,9 @@ jobs:
       - name: Source-inventory tests
         run: bash test/source-inventory.test.sh
 
+      - name: Honest-skip tests
+        run: bash test/honest-skips.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest

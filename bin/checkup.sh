@@ -979,6 +979,16 @@ if [ ! -s "$LAST_RAW" ] || ! is_valid_json "$LAST_RAW"; then
     echo -e "${YELLOW}⚠️  npm audit produced no parseable output (5/10)${NC}"
     HEALTH_SCORE=$((HEALTH_SCORE + 5))
     write_failed "npm-audit" "npm audit produced no parseable JSON (exit $LAST_EXIT)" "$AUDIT_INTENT"
+elif jq -e '.error or (.metadata.vulnerabilities == null)' "$LAST_RAW" >/dev/null 2>&1; then
+    # npm audit emitted valid JSON but could NOT actually audit: an `.error`
+    # object (e.g. ENOLOCK — no lockfile) and no `.metadata.vulnerabilities`.
+    # Grading this as "no high/critical" would be a false PASS over an audit that
+    # scanned nothing — the exact absence-as-verdict #85 closes. Skip honestly,
+    # carrying npm's own reason; undo the score this section provisionally claimed.
+    MAX_SCORE=$((MAX_SCORE - 10))
+    AUDIT_SKIP_REASON=$(jq -r '.error.summary // .error.code // "npm could not resolve a dependency tree (e.g. no lockfile)"' "$LAST_RAW")
+    echo -e "${BLUE}ℹ️  Skipped — npm audit could not run: ${AUDIT_SKIP_REASON}${NC}"
+    write_skipped "npm-audit" "npm audit could not audit (no lockfile / unresolvable tree): ${AUDIT_SKIP_REASON}" "$AUDIT_INTENT"
 else
     CRIT_COUNT=$(jq '.metadata.vulnerabilities.critical // 0' "$LAST_RAW")
     HIGH_COUNT=$(jq '.metadata.vulnerabilities.high // 0' "$LAST_RAW")
@@ -1053,10 +1063,27 @@ else
 MAX_SCORE=$((MAX_SCORE + 5))
 # npm outdated exits 1 when outdated packages exist (expected); empty output
 # means everything is current. Validate JSON before parsing.
+# npm outdated prints `{}` (or nothing) BOTH when everything is current AND when
+# it couldn't resolve a tree (no lockfile / nothing installed) — the output alone
+# can't tell them apart. Detect the zero-outdated case, then trust it as a PASS
+# only when a resolvable tree exists (an npm lockfile); otherwise it's
+# "couldn't check" → an honest skip, not a false "all up to date" (#85).
+DEPS_ZERO=false
 if [ ! -s "$LAST_RAW" ]; then
-    echo -e "${GREEN}✅ All dependencies are up-to-date (5/5)${NC}"
-    HEALTH_SCORE=$((HEALTH_SCORE + 5))
-    write_parsed "deps-freshness" "pass" 0 "All dependencies up-to-date" '[]' "$DEPS_INTENT"
+    DEPS_ZERO=true
+elif is_valid_json "$LAST_RAW" && [ "$(jq 'length' "$LAST_RAW")" -eq 0 ]; then
+    DEPS_ZERO=true
+fi
+if [ "$DEPS_ZERO" = true ]; then
+    if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+        echo -e "${GREEN}✅ All dependencies are up-to-date (5/5)${NC}"
+        HEALTH_SCORE=$((HEALTH_SCORE + 5))
+        write_parsed "deps-freshness" "pass" 0 "All dependencies up-to-date" '[]' "$DEPS_INTENT"
+    else
+        MAX_SCORE=$((MAX_SCORE - 5))
+        echo -e "${BLUE}ℹ️  Skipped — no npm lockfile; dependency tree not resolvable (freshness not measured)${NC}"
+        write_skipped "deps-freshness" "no npm lockfile — dependency tree not resolvable; npm outdated returned no packages, which here means 'couldn't check', not 'all current'" "$DEPS_INTENT"
+    fi
 elif ! is_valid_json "$LAST_RAW"; then
     echo -e "${YELLOW}⚠️  npm outdated produced unparseable output${NC}"
     write_failed "deps-freshness" "npm outdated did not produce valid JSON (exit $LAST_EXIT)" "$DEPS_INTENT"
@@ -1186,6 +1213,15 @@ if [ "$DETECT_ENGINE_DUPLICATION" = "jscpd" ]; then
     echo ""
     JSCPD_MARKER="$RAW_DIR/.duplication.marker"; : > "$JSCPD_MARKER"
     run_tool "Code Duplication" npm run quality:duplicates
+    if toolchain_absent; then
+        # No package.json / npm absent / the `quality:duplicates` script isn't
+        # defined (run_tool promotes a missing script to exit 127). The tool never
+        # ran, so the "no fresh report" path below would emit a false FAIL — route
+        # through the honest skip like the other node sections (#85, sibling of #80
+        # which fixed this elsewhere but not in the duplication freshness path).
+        echo -e "${BLUE}ℹ️  Skipped — no package.json, npm not on PATH, or the 'quality:duplicates' script isn't defined${NC}"
+        write_skipped "duplication" "Node-stack check skipped — no package.json, npm not on PATH, or the 'quality:duplicates' script isn't defined" "$DUP_INTENT"
+    else
     MAX_SCORE=$((MAX_SCORE + 5))
     # Trust only a report this run produced — a stale reports/jscpd/jscpd-report.json
     # would otherwise read as a confident low-duplication pass.
@@ -1226,6 +1262,7 @@ if [ "$DETECT_ENGINE_DUPLICATION" = "jscpd" ]; then
             JSCPD_STATUS="fail"
         fi
         write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines (jscpd)" "$JSCPD_TOP" "$DUP_INTENT"
+    fi
     fi
 elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     # ---- Tier 2: lizard -Eduplicate (language-agnostic clone detection) ----
