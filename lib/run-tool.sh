@@ -103,19 +103,20 @@ run_tool() {
     # lint-with-warnings, typecheck-with-errors, etc).
     "$@" > "$LAST_RAW" 2> "$LAST_STDERR" && LAST_EXIT=0 || LAST_EXIT=$?
 
-    # `npm run <missing-script>` exits non-zero with a "Missing script"
-    # diagnostic on stderr. Without this fix the section's parser sees an
-    # empty $LAST_RAW and either passes (zero findings!) or misclassifies
-    # the lack of output as a real failure — both wrong. Promoting to 127
-    # routes the call through the section's existing graceful-degrade path
-    # ("tool not installed" — close enough; the underlying issue is "this
-    # check isn't wired up in your package.json yet"). Match the message
-    # regardless of npm's version prefix: npm < 9 prints "npm ERR! Missing
-    # script", npm ≥ 9 prints "npm error Missing script" — keying on the old
-    # prefix silently regressed on modern npm, reporting the check as a real
-    # `fail` on any repo with a package.json but no such script (#80).
+    # Promote "the toolchain isn't actually here" diagnostics to 127 so the
+    # section's existing graceful-degrade routes them to an honest `skip` instead
+    # of a false `fail`/`pass` on empty output. Two cases, both exit non-127 so
+    # they would otherwise slip past toolchain_absent:
+    #   - `npm run <missing-script>` → "Missing script" (#80). Match regardless of
+    #     npm's version prefix: npm < 9 "npm ERR! Missing script", npm ≥ 9
+    #     "npm error Missing script" — keying on the old prefix regressed silently
+    #     on modern npm and reported a real `fail` on any repo lacking the script.
+    #   - a `test`/build script that invokes a runner via npx which ISN'T installed
+    #     → "could not determine executable to run" (#91). The script exists, so
+    #     this isn't a missing-script case; the runner simply isn't on disk (no
+    #     node_modules) — a toolchain-absent skip, not a failed test suite.
     if [ "$LAST_EXIT" != "0" ] && [ -s "$LAST_STDERR" ] \
-        && grep -qE 'Missing script' "$LAST_STDERR" 2>/dev/null; then
+        && grep -qE 'Missing script|could not determine executable to run' "$LAST_STDERR" 2>/dev/null; then
         LAST_EXIT=127
     fi
 

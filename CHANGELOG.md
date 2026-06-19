@@ -71,6 +71,12 @@ across the whole thing, honestly*.
 - Project-built checks **skip (not fail)** when a manifest exists but the npm
   script / toolchain is absent — including an npm diagnostic format drift — and on
   non-Node targets (#80, #14, #23).
+- **Unit-tests skip (not fail) when the test runner isn't installed** (#91): a
+  `test` script that invokes a runner via `npx` which isn't on disk emits "could
+  not determine executable to run" (exit ≠ 127, so it dodged `toolchain_absent`)
+  and was reported as a failing suite. Now promoted to a toolchain-absent skip
+  (sibling of #80); the "no recognisable summary" message no longer hardcodes
+  "vitest".
 - **Absence/failure no longer leaks as a pass/fail verdict** (#85): `npm-audit`
   skips on `ENOLOCK` / no audit metadata instead of reporting a false "no
   high/critical"; `deps-freshness` treats a zero-outdated result as a pass only

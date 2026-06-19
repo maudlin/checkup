@@ -621,7 +621,7 @@ TEST_OUTPUT_CLEAN=$(sed "s/${ESC}\[[0-9;]*m//g" "$LAST_RAW")
 
 if ! echo "$TEST_OUTPUT_CLEAN" | grep -q "Test Files"; then
     echo -e "${RED}❌ Tests failed to run (0/30)${NC}"
-    write_failed "unit-tests" "vitest produced no recognisable summary (exit $LAST_EXIT)" "$UT_INTENT"
+    write_failed "unit-tests" "the test runner produced no recognisable summary (exit $LAST_EXIT)" "$UT_INTENT"
 else
     # Extract counts with portable regex (BSD grep has no -P / \K).
     TESTS_LINE=$(echo "$TEST_OUTPUT_CLEAN" | grep -E "^[[:space:]]*Tests[[:space:]]" | head -1)
@@ -653,7 +653,7 @@ else
         write_parsed "unit-tests" "pass" "$PASSED" "$PASSED tests passing" '[]' "$UT_INTENT"
     else
         echo -e "${RED}❌ No tests detected (0/30)${NC}"
-        write_parsed "unit-tests" "fail" 0 "No tests detected in vitest output" '[]' "$UT_INTENT"
+        write_parsed "unit-tests" "fail" 0 "No tests detected in the test runner output" '[]' "$UT_INTENT"
     fi
 fi
 fi

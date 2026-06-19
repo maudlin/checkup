@@ -93,10 +93,26 @@ NPMEOF
 done
 
 echo ""
-echo "run_tool — npm exit-1 WITHOUT 'Missing script' is left unchanged"
-# Regression guard: a real npm failure (e.g. tests failed) must NOT be
-# promoted to 127, otherwise we'd silently downgrade real findings to
-# skips. Only the specific "Missing script" diagnostic triggers promotion.
+echo 'run_tool — `npx <uninstalled-runner>` is promoted to LAST_EXIT=127 (#91)'
+# A test/build script that invokes a runner via npx which isn't installed exits
+# non-zero with "could not determine executable to run" — the script EXISTS, the
+# binary just isn't on disk (no node_modules). Without promotion the section reads
+# empty output as a real test FAILURE; promoting routes it to the honest skip.
+cat > "$FAKE_PATH/npm" <<'NPMEOF'
+#!/bin/bash
+echo 'npm error could not determine executable to run' >&2
+exit 1
+NPMEOF
+chmod +x "$FAKE_PATH/npm"
+PATH="$FAKE_PATH:$PATH" run_tool "Fake NPM No Executable" npm test >/dev/null
+assert_eq "uninstalled runner → LAST_EXIT=127" "127" "$LAST_EXIT"
+
+echo ""
+echo "run_tool — npm exit-1 WITHOUT a toolchain-absent diagnostic is left unchanged"
+# Regression guard: a real npm failure (e.g. tests actually failed) must NOT be
+# promoted to 127, otherwise we'd silently downgrade real findings to skips. Only
+# the specific "Missing script" / "could not determine executable" diagnostics
+# trigger promotion.
 cat > "$FAKE_PATH/npm" <<'NPMEOF'
 #!/bin/bash
 echo "some real failure output" >&2
