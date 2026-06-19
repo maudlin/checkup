@@ -289,10 +289,11 @@ fi
 # route here — that is the exact mis-route #7 fixed. lizard's TS parser is weaker
 # (the reason ESLint is preferred for TS), so we never silently fall ESLint →
 # lizard on the JS/TS slice; an ESLint failure on a node-dominant repo stays an
-# honest fail telling the owner to fix their config. Running ESLint on the JS/TS
-# slice of a non-node-dominant polyglot (so its TS gets AST-grade complexity too)
-# is the symmetric improvement tracked in #73 — it needs a flat-config probe and
-# is out of scope here.
+# honest fail telling the owner to fix their config. The SYMMETRIC case — ESLint
+# on the JS/TS slice of a NON-node-dominant polyglot (so its TS gets AST-grade
+# complexity too) — is now wired in the lizard arm below (#73), gated on a
+# resolvable flat config so a config-less repo never triggers a speculative
+# hard-fail.
 # ESLint slice gating (#79). The JS/TS complexity slice needs a RESOLVABLE root
 # flat config (the only config `eslint .` finds) AND a way to run ESLint without a
 # silent network fetch. A monorepo whose config lives in a sub-package, or a tree
@@ -345,8 +346,33 @@ if [ "$NODE_DOMINANT" = true ] && [ -n "$NODE_SRC_PROBE" ]; then
             CPLX_REASON="node dominant but $ESLINT_JSTS_REASON and no non-JS lizard source → complexity not measured" ;;
     esac
 elif [ -n "$LIZARD_BIN" ] && [ -n "$LIZARD_PROBE" ]; then
-    DETECT_CPLX_ARM="lizard"; DETECT_COMPLEXITY_SLICES="lizard"
-    DETECT_ENGINE_COMPLEXITY="lizard"; CPLX_REASON="lizard-parseable source → lizard (true per-function CCN, multi-language)"
+    # Non-node-dominant but lizard-parseable source present. By default lizard
+    # measures everything (true per-function CCN, multi-language) — including any
+    # JS/TS slice, but with its weaker TS parser. #73: the SYMMETRIC case to the
+    # node-dominant merge (#68) — if the tree ALSO carries a JS/TS slice AND a
+    # resolvable ESLint flat config, run ESLint on that slice (AST-accurate
+    # cyclomatic + cognitive) and fence lizard off it, merged into one record.
+    # Gated on ESLINT_SLICE_OK — which already encodes the flat-config probe
+    # (`eslint_flat_config_root`) plus a runnable, non-network ESLint (#79) — so a
+    # config-less repo is UNCHANGED: lizard still covers everything and we never
+    # run ESLint speculatively (the exact hard-fail #68 deferred this to avoid).
+    # Reuses the merged execution arm wholesale; on an ESLint runtime failure the
+    # JS/TS slice is honestly reported UNMEASURED (consistent with #79) rather
+    # than silently re-covered by lizard.
+    if [ "$ESLINT_SLICE_OK" = true ]; then
+        DETECT_CPLX_ARM="merged"; DETECT_COMPLEXITY_SLICES="eslint"
+        if [ -n "$NONJS_LIZARD_PROBE" ]; then
+            DETECT_COMPLEXITY_SLICES="eslint lizard"
+            DETECT_ENGINE_COMPLEXITY="eslint+lizard"
+            CPLX_REASON="non-node-dominant polyglot with a JS/TS slice + ESLint config → ESLint on the JS/TS slice (AST-accurate); lizard on the non-JS source (Python/C#/Go/…) — partitioned by extension, merged into one record (#73)"
+        else
+            DETECT_ENGINE_COMPLEXITY="eslint"
+            CPLX_REASON="JS/TS slice + ESLint config (node present but not dominant) → ESLint (AST-accurate cyclomatic + cognitive); no separate non-JS lizard source (#73)"
+        fi
+    else
+        DETECT_CPLX_ARM="lizard"; DETECT_COMPLEXITY_SLICES="lizard"
+        DETECT_ENGINE_COMPLEXITY="lizard"; CPLX_REASON="lizard-parseable source → lizard (true per-function CCN, multi-language)"
+    fi
 elif [ -n "$SCC_BIN" ]; then
     DETECT_CPLX_ARM="scc"; DETECT_ENGINE_COMPLEXITY="scc"; CPLX_REASON="scc fallback (decision-keyword heuristic; the only engine covering Classic ASP)"
 else

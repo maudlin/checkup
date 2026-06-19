@@ -24,7 +24,10 @@ across the whole thing, honestly*.
 - **Stack auto-detection** (`detection.json`) that routes the complexity /
   duplication engines by the detected stack (#7, #67).
 - **Per-language complexity for polyglot repos** — ESLint on the JS/TS slice +
-  `lizard` on the rest, partitioned by extension and merged into one record (#68).
+  `lizard` on the rest, partitioned by extension and merged into one record, in
+  **both directions**: node-dominant repos (#68) and non-node-dominant polyglots
+  whose JS/TS slice has a resolvable ESLint config (#73) — gated on that config so
+  a config-less repo is unchanged (lizard covers everything, no speculative fail).
 - **Honest coverage** — scan scope enumerated from the VCS (`.gitignore`-aware),
   plus a coverage signal (assessed / excluded / unmeasured / couldn't-run)
   surfaced in `detection.json`, the console, and the report headline (#75).

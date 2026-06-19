@@ -165,13 +165,18 @@ The coverage block is lifted to the report headline and the console (console ==
 artefact), including how many checks couldn't run — making absence of coverage a
 loud, first-class signal rather than a silent skip (#51).
 
-When a node-dominant repo also carries languages ESLint can't see (Python, C#,
-Go, …), complexity runs **per language slice and merges**: ESLint measures the
-JS/TS slice (AST-accurate cyclomatic + cognitive) and lizard the rest (true
+When a repo carries both a JS/TS slice and languages ESLint can't see (Python,
+C#, Go, …), complexity runs **per language slice and merges**: ESLint measures
+the JS/TS slice (AST-accurate cyclomatic + cognitive) and lizard the rest (true
 per-function CCN), partitioned by extension so no file is counted twice, folded
 into one `parsed/complexity.json` and one `complexity-full.csv` via the shared
-`lib/complexity-merge.jq` / `lib/complexity-csv.jq` transforms (#68). A
-single-language repo runs exactly one slice, so its output is unchanged.
+`lib/complexity-merge.jq` / `lib/complexity-csv.jq` transforms (#68). This holds
+in **both directions**: a node-dominant repo (ESLint primary) and — provided a
+flat ESLint config resolves — a non-node-dominant polyglot whose JS/TS slice
+would otherwise get lizard's weaker TS parsing (#73). The ESLint slice is gated
+on a resolvable config, so a config-less repo never triggers a speculative
+ESLint hard-fail: lizard simply covers everything. A single-language repo runs
+exactly one slice, so its output is unchanged.
 
 `primaryConfidence` raises the confidence behind absence-is-signal (#51): a
 "no tests" finding is asserted as a *genuine* absence only when we know we looked
