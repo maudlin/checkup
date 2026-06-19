@@ -56,6 +56,12 @@ across the whole thing, honestly*.
 - Project-built checks **skip (not fail)** when a manifest exists but the npm
   script / toolchain is absent — including an npm diagnostic format drift — and on
   non-Node targets (#80, #14, #23).
+- **Absence/failure no longer leaks as a pass/fail verdict** (#85): `npm-audit`
+  skips on `ENOLOCK` / no audit metadata instead of reporting a false "no
+  high/critical"; `deps-freshness` treats a zero-outdated result as a pass only
+  with a resolvable tree (an npm lockfile), else skips; `duplication` skips on a
+  missing `quality:duplicates` script instead of a false fail (the #80 pattern in
+  a path it hadn't reached).
 - Monorepo-aware forensic roots + honest-degrade on an empty git window (#42);
   target-relative paths for git-forensics on subdirectory targets (#15);
   ESLint complexity gated on a real Node project (#39); type-aware-lint degrades
