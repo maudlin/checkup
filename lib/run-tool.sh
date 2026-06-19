@@ -81,10 +81,14 @@ run_tool() {
     local s
     s=$(slug "$label")
 
+    # Namespace raw filenames under the topology recover pass (#78) so a check run
+    # in two sub-packages doesn't overwrite the other's captured output.
+    local rawbase="$s"
+    [ -n "${SLUG_NS:-}" ] && rawbase="$SLUG_NS-$s"
     LAST_LABEL="$label"
     LAST_SLUG="$s"
-    LAST_RAW="$RAW_DIR/$s.txt"
-    LAST_STDERR="$RAW_DIR/$s.stderr.txt"
+    LAST_RAW="$RAW_DIR/$rawbase.txt"
+    LAST_STDERR="$RAW_DIR/$rawbase.stderr.txt"
     : > "$LAST_RAW"
     : > "$LAST_STDERR"
 
@@ -139,15 +143,35 @@ write_parsed() {
             ;;
     esac
 
+    # Topology recover pass (#78): when SLUG_NS is set (the section is running
+    # inside a sub-package), the record is namespaced so per-package results don't
+    # collide and the renderer can group them. The on-disk filename stays FLAT
+    # (`<ns>-<slug>.json`) — the renderer globs parsed/*.json non-recursively — but
+    # the `.slug` FIELD carries `<ns>/<slug>` (e.g. "backend/typecheck"). Finding
+    # paths are re-prefixed to TARGET-relative so the cross-tree by-file/focus join
+    # keeps one namespace: a path already starting with "<ns>/" (a section that
+    # stripped $TARGET) or absolute is left alone; a bare/cwd-relative path
+    # (e.g. "src/x.ts", or the literal "package.json") gets "<ns>/" prepended.
+    local recordslug="$slug" fileslug="$slug"
+    if [ -n "${SLUG_NS:-}" ]; then
+        recordslug="$SLUG_NS/$slug"
+        fileslug="$SLUG_NS-$slug"
+        top=$(printf '%s' "$top" | jq --arg ns "$SLUG_NS" '
+            map(if ((.file // "") != "")
+                     and ((.file | startswith($ns + "/")) | not)
+                     and ((.file | startswith("/")) | not)
+                then .file = ($ns + "/" + .file) else . end)')
+    fi
+
     jq -n \
-        --arg slug "$slug" \
+        --arg slug "$recordslug" \
         --arg status "$status" \
         --argjson count "$count" \
         --arg summary "$summary" \
         --argjson top "$top" \
         --argjson intent "$intent" \
         '{slug:$slug, status:$status, count:$count, summary:$summary, top:$top, intent:$intent}' \
-        > "$PARSED_DIR/$slug.json"
+        > "$PARSED_DIR/$fileslug.json"
 }
 
 # write_skipped <slug> <reason> [intent-json]

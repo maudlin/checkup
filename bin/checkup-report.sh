@@ -322,6 +322,9 @@ FOCUS_MD=$(echo "$FOCUS" | jq -r '
 # member is "no data", not a false pass.)
 PILLARS=$(jq -s '
     def pillarOf:
+        # Topology recover pass (#78) emits namespaced slugs ("backend/typecheck");
+        # map on the BASE slug so a per-package check still lands in its pillar.
+        (split("/") | last) |
         {
           "complexity":"maintainability","duplication":"maintainability","circular-deps":"maintainability",
           "unused-code":"maintainability","git-hotspots":"maintainability","change-coupling":"maintainability",

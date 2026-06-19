@@ -187,8 +187,22 @@ checkup classifies the layout (`lib/detect-topology.sh`) into `single` /
 real workspace must never trip the smell alarm. An undeclared fan-out is surfaced
 as a headline macro-alarm *and* records its `assessmentRoots` (the sub-packages) —
 so the rest of the report's skips read as "looked in the wrong place", not
-"nothing here". (Phase 1 judges + records; running the project-built checks *in*
-each assessment root is the follow-up recover phase.)
+"nothing here".
+
+**Recover (#78 Phase 2).** Given the `assessmentRoots`, the project-built checks
+run once *per* root (`cd`'d in so each package's scripts / lockfile / config
+resolve), and their records are namespaced — `.slug` carries `<pkg>/<check>` (e.g.
+`backend/npm-audit`), finding paths are re-prefixed to TARGET-relative so the
+cross-tree by-file / focus join stays coherent, and the renderer maps each to its
+pillar on the base slug. A single package / declared workspace runs the loop once
+at `.` with no namespace — byte-identical to before. Recovered today: the
+dependency-health (`npm-audit`, `deps-freshness`) and correctness/lint
+(`typecheck`, `unit-tests`, `code-quality`, `type-aware-lint`, `build`) clusters.
+The engine-routed / artifact / whole-tree checks (`complexity`, `duplication`,
+`coverage`) stay root-scoped for now — recovering them per package (each needs its
+own engine re-routing) is the remaining slice. Honesty survives recovery: a
+sub-package whose toolchain can't run still `skip`s with a reason (never
+green-by-default), the floor laid in #85.
 
 When a repo carries both a JS/TS slice and languages ESLint can't see (Python,
 C#, Go, …), complexity runs **per language slice and merges**: ESLint measures
