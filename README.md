@@ -153,6 +153,13 @@ bundle drives non-agentic uses too (a human reads `checkup-report.md`; CI/trend
 consumers read the JSON). checkup is a localiser and a briefing, **not a gate**
 ([ADR-0009](docs/decisions/0009-deterministic-health-localiser.md)).
 
+For a CTO-level read — *what is this, what's the real risk posture, what's the
+dominant unknown, what would de-risk it* — see the [executive-summary
+recipe](docs/executive-summary.md): a portable prompt that synthesises a run into
+a one-page brief. Note its **privacy trade-off** — feeding source to a hosted LLM
+breaks the deterministic scan's deny-egress property ([ADR-0008](docs/decisions/0008-network-isolation.md));
+the recipe flags it and offers a report-only mode.
+
 ---
 
 ## Documentation
