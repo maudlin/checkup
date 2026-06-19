@@ -31,6 +31,12 @@ across the whole thing, honestly*.
 - **Honest coverage** — scan scope enumerated from the VCS (`.gitignore`-aware),
   plus a coverage signal (assessed / excluded / unmeasured / couldn't-run)
   surfaced in `detection.json`, the console, and the report headline (#75).
+- **Topology detection** — *the scan root is a hypothesis* (#78, Phase 1):
+  classifies the package layout (single / declared-workspace / undeclared
+  fan-out / orphan root) and flags an undeclared fan-out — a thin orchestrator
+  root over real packages one level down — as a headline macro-alarm, recording
+  the sub-packages as `assessmentRoots` in `detection.json`. Declared workspaces
+  (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
 - **`lizard`** as a true multi-language complexity + duplication engine, and a
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /

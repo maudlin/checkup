@@ -92,6 +92,17 @@ if [ -f "$OUT_DIR/detection.json" ]; then
           + (if .narrowed then " · ⚠️ scope NARROWED by CHECKUP_SRC_ROOTS" else "" end)
           + (if (.unmeasured // []) | length > 0 then " · ⚠️ not measured: " + ((.unmeasured) | join("; ")) else "" end)
     ' "$OUT_DIR/detection.json" 2>/dev/null)
+    # Topology (#78): an undeclared fan-out / orphan root means the project-built
+    # checks assessed only the scan root — lift it onto the headline so the rest
+    # of the report's skips read as "looked in the wrong place", not "nothing here".
+    TOPO_TXT=$(jq -r '
+        .topology // empty
+        | if .shape == "undeclared-fan-out" then
+            " · ⚠️ undeclared fan-out: " + ((.assessmentRoots // []) | join(", ")) + " below an orchestrator root (assessed root only)"
+          elif .shape == "orphan-root" then " · ⚠️ orphan root (no buildable package)"
+          else "" end
+    ' "$OUT_DIR/detection.json" 2>/dev/null)
+    [ -n "$TOPO_TXT" ] && COVERAGE_TXT="$COVERAGE_TXT$TOPO_TXT"
     if [ -n "$COVERAGE_TXT" ]; then
         # Lift "what couldn't run" to the headline (absence-of-coverage is signal,
         # #51): the per-check summaries say why each skipped.
@@ -388,7 +399,7 @@ MACRO=$(jq -s \
     def normPath: (. // "") | tostring
         | if startswith($root) then .[($root|length):] else . end
         | if startswith($home) then "~/" + .[($home|length):] else . end;
-    (["tech-viability","test-presence","gitleaks"]) as $macroSlugs
+    (["tech-viability","test-presence","gitleaks","topology"]) as $macroSlugs
     | [ .[] | . as $c | (.top // [])[]
         | select(($macroSlugs | index($c.slug) != null) or (.severity == "critical"))
         | {slug:$c.slug, severity, message,

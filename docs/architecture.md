@@ -131,7 +131,7 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 
 ```jsonc
 {
-  "schemaVersion": "1.3",
+  "schemaVersion": "1.4",
   "primary": "node",                 // largest stack, or null when ambiguous
   "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
   "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
@@ -157,6 +157,19 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
     "narrowed": false, "byArea": { "src": 280, "server": 110, "scripts": 22 },
     "unmeasured": []                 // e.g. ["JS/TS complexity (no resolvable root ESLint config)"]
   },
+  // Package topology (#78): the scan root is a hypothesis. shape distinguishes a
+  // single package from a declared workspace (healthy) from an UNDECLARED fan-out
+  // (a thin orchestrator root over real packages one level down — a smell, and
+  // where the real work lives below the scan root) from an orphan root.
+  // assessmentRoots is where the project-built checks SHOULD run ("." for the
+  // root; the sub-packages for a fan-out) — the contract the per-package recover
+  // pass consumes. An undeclared fan-out is surfaced as a headline macro-alarm.
+  "topology": {
+    "shape": "single",               // single | declared-workspace | undeclared-fan-out | orphan-root | n/a
+    "workspaceTool": null,           // pnpm | nx | turbo | lerna | null
+    "rootHasLockfile": true, "rootHasRealScripts": true,
+    "assessmentRoots": ["."], "childCount": 0, "capped": false
+  },
   "overridden": false                // true when a repo-local `.checkup.yml` steered detection
 }
 ```
@@ -164,6 +177,18 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 The coverage block is lifted to the report headline and the console (console ==
 artefact), including how many checks couldn't run — making absence of coverage a
 loud, first-class signal rather than a silent skip (#51).
+
+**Topology — the scan root is a hypothesis (#78).** A low-quality / inherited repo
+often roots a thin *orchestrator* (a `package.json` whose scripts only `cd` into
+sub-dirs, with no lockfile of its own) over the real packages one level down.
+checkup classifies the layout (`lib/detect-topology.sh`) into `single` /
+`declared-workspace` (npm/pnpm/yarn/nx/turbo/lerna — healthy) / `undeclared-fan-out`
+/ `orphan-root`. The discriminator that matters is **declared vs undeclared**: a
+real workspace must never trip the smell alarm. An undeclared fan-out is surfaced
+as a headline macro-alarm *and* records its `assessmentRoots` (the sub-packages) —
+so the rest of the report's skips read as "looked in the wrong place", not
+"nothing here". (Phase 1 judges + records; running the project-built checks *in*
+each assessment root is the follow-up recover phase.)
 
 When a repo carries both a JS/TS slice and languages ESLint can't see (Python,
 C#, Go, …), complexity runs **per language slice and merges**: ESLint measures
