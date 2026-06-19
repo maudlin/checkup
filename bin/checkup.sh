@@ -122,6 +122,9 @@ fi
 # committed docs/reports/checkup-report.md convention.
 OUT_DIR="${CHECKUP_OUT_DIR:-reports}"
 mkdir -p "$OUT_DIR"
+# Absolutise so writes stay correct when the topology recover pass (#78) cd's into
+# a sub-package: RAW_DIR/PARSED_DIR/artifacts must NOT follow the changed cwd.
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 # Output directories for the run_tool / write_parsed helpers.
 export RAW_DIR="$OUT_DIR/raw"
@@ -510,6 +513,20 @@ apply_check_toggles
 # previous hardcoded commands exactly.
 load_profile "$DETECT_PRIMARY" "$CHECKUP_HOME"
 echo ""
+
+# ─── Topology recover pass (#78) — project-built cluster A ────────────────────
+# Run this cluster once per assessment root. A normal repo → one iteration at "."
+# (SLUG_NS empty → byte-identical to before). An undeclared fan-out → once per
+# sub-package, cd'd in so each package's scripts/lockfile/config resolve, records
+# namespaced (backend/typecheck …). No subshell: the legacy score still
+# accumulates as before on a single package; cwd + SLUG_NS are saved/restored.
+for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+    _RECOVER_CWD="$PWD"; SLUG_NS=""
+    if [ "$TOPO_ROOT" != "." ]; then
+        cd "$TARGET/$TOPO_ROOT" 2>/dev/null || { cd "$_RECOVER_CWD"; continue; }
+        SLUG_NS="$TOPO_ROOT"
+        echo -e "${BLUE}📦 Sub-package: $TOPO_ROOT${NC}"
+    fi
 
 # 1. TypeScript Type Checking
 # section:    typecheck
@@ -915,6 +932,10 @@ fi
 fi
 echo ""
 
+    cd "$_RECOVER_CWD"; SLUG_NS=""
+done
+# ─── end recover cluster A ────────────────────────────────────────────────────
+
 # 5. Security Analysis (Semgrep)
 # section:    semgrep
 # purpose:    Static analysis for known security antipatterns (SQL injection, XSS,
@@ -991,6 +1012,15 @@ else
     write_parsed "semgrep" "$SEMGREP_STATUS" "$FINDINGS_COUNT" "$SEMGREP_SUMMARY" "$SEMGREP_TOP" "$SEMGREP_INTENT"
 fi
 echo ""
+
+# ─── Topology recover pass (#78) — project-built cluster B (dependency health) ─
+for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+    _RECOVER_CWD="$PWD"; SLUG_NS=""
+    if [ "$TOPO_ROOT" != "." ]; then
+        cd "$TARGET/$TOPO_ROOT" 2>/dev/null || { cd "$_RECOVER_CWD"; continue; }
+        SLUG_NS="$TOPO_ROOT"
+        echo -e "${BLUE}📦 Sub-package: $TOPO_ROOT${NC}"
+    fi
 
 # 6. Security Audit (npm audit)
 # section:    npm-audit
@@ -1163,6 +1193,10 @@ else
 fi
 fi
 echo ""
+
+    cd "$_RECOVER_CWD"; SLUG_NS=""
+done
+# ─── end recover cluster B ────────────────────────────────────────────────────
 
 # 8. Circular Dependencies (madge)
 # section:    circular-deps

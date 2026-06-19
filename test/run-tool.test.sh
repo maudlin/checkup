@@ -150,5 +150,34 @@ if is_valid_json "$RAW_DIR/bad.txt"; then notok "invalid JSON rejected"; else ok
 if is_valid_json "$RAW_DIR/nonexistent.txt"; then notok "missing file rejected"; else ok "missing file rejected"; fi
 
 echo ""
+echo "write_parsed under SLUG_NS — topology recover namespacing (#78)"
+# When SLUG_NS is set (a section running inside a sub-package) the record is
+# namespaced: flat filename `<ns>-<slug>.json`, `.slug` field `<ns>/<slug>`, and
+# finding paths re-prefixed to TARGET-relative so the by-file join stays coherent.
+SLUG_NS="backend"
+write_parsed "npm-audit" "fail" 1 "1 critical" \
+    '[{"file":"package.json","severity":"critical","code":"x","message":"m"}]' '{}'
+assert_file_exists "flat filename <ns>-<slug>.json" "$PARSED_DIR/backend-npm-audit.json"
+assert_json_field  "namespaced .slug field"        "$PARSED_DIR/backend-npm-audit.json" ".slug"         "backend/npm-audit"
+assert_json_field  "literal package.json prefixed" "$PARSED_DIR/backend-npm-audit.json" ".top[0].file"  "backend/package.json"
+
+write_parsed "typecheck" "fail" 1 "err" \
+    '[{"file":"src/a.ts","severity":"error","code":"TS","message":"m"}]' '{}'
+assert_json_field  "cwd-relative path prefixed"    "$PARSED_DIR/backend-typecheck.json" ".top[0].file"  "backend/src/a.ts"
+
+# A path already TARGET-relative (a section that stripped $TARGET → starts with
+# the ns) or absolute must NOT be double-prefixed.
+write_parsed "lint" "warn" 2 "x" \
+    '[{"file":"backend/src/b.ts","severity":"warning","code":"L","message":"m"},{"file":"/abs/c.ts","severity":"low","code":"L","message":"m"}]' '{}'
+assert_json_field  "already-ns path left alone"    "$PARSED_DIR/backend-lint.json" ".top[0].file"  "backend/src/b.ts"
+assert_json_field  "absolute path left alone"      "$PARSED_DIR/backend-lint.json" ".top[1].file"  "/abs/c.ts"
+unset SLUG_NS
+
+# With SLUG_NS unset, behaviour is unchanged (flat slug, no path prefix).
+write_parsed "npm-audit" "pass" 0 "ok" '[{"file":"package.json","severity":"info","code":"x","message":"m"}]' '{}'
+assert_json_field  "no-ns slug unchanged"          "$PARSED_DIR/npm-audit.json" ".slug"        "npm-audit"
+assert_json_field  "no-ns path unchanged"          "$PARSED_DIR/npm-audit.json" ".top[0].file" "package.json"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
