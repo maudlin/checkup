@@ -234,11 +234,13 @@ The following all work unchanged on any stack:
 
 - **Complexity** — **auto-routed by the detected stack** (no manual swap): ESLint
   (`complexity` + `sonarjs/cognitive-complexity`, AST-aware via typescript-eslint)
-  on the JS/TS slice of a node-dominant repo; `lizard` (true per-function CCN
-  across C, C++, Java, JS, Python, Ruby, Rust, Go, Swift, Kotlin, Lua, Scala, PHP,
-  Objective-C, …) on every other stack — and on the *non-JS slice* of a polyglot
-  repo, merged with the ESLint slice into one record; `scc`'s heuristic as the
-  universal fallback (e.g. Classic ASP). All emit the same per-function CSV the
+  on the JS/TS slice of *any* repo with a resolvable ESLint config — whether
+  node-dominant or a Python/Java/Go-dominant polyglot that also carries a JS/TS
+  slice (#73); `lizard` (true per-function CCN across C, C++, Java, JS, Python,
+  Ruby, Rust, Go, Swift, Kotlin, Lua, Scala, PHP, Objective-C, …) on every other
+  stack — and on the *non-JS slice* of a polyglot repo, merged with the ESLint
+  slice into one record; `scc`'s heuristic as the universal fallback (e.g.
+  Classic ASP). All emit the same per-function CSV the
   `git-hotspots` join consumes, so churn × complexity works on any stack. ESLint
   is preferred for TS because `lizard`'s state-machine TS parser mis-attributes
   class-method CCN; when ESLint can't run, that slice is reported as *unmeasured*

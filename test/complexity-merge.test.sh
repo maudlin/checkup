@@ -101,26 +101,41 @@ assert_eq "no COG score in any col2" "" \
           "$(csv "$MIX" eslint | cut -d, -f2 | grep -x 18 || true)"
 
 echo ""
-echo "routing: the node-dominant slice-selection rule (mirrors bin/checkup.sh)"
-# Replicates the node-dominant merged arm. The ESLint slice is gated on a
-# runnable config (#79: ESLINT_SLICE_OK), so a node-dominant repo with non-JS
-# source but no ESLint config routes lizard-only (JS/TS unmeasured) — it must
-# NOT drop to "eslint" and then fail.
+echo "routing: the slice-selection rule (mirrors bin/checkup.sh, both arms)"
+# Replicates the detector. Node-dominant: ESLint primary on JS/TS, lizard on the
+# non-JS rest. The ESLint slice is gated on a runnable config (#79:
+# ESLINT_SLICE_OK), so a repo with non-JS source but no ESLint config routes
+# lizard-only (JS/TS unmeasured) — it must NOT drop to "eslint" then fail.
+# Non-node-dominant (#73): lizard covers everything by default, but a JS/TS slice
+# WITH a resolvable config upgrades to the same merged arm (ESLint on JS/TS,
+# lizard on the non-JS remainder) — config-less stays lizard-only, unchanged.
 complexity_slices() { # <node_dom> <nonjs_present> <lizard_installed> <eslint_ok>
     local node_dom="$1" nonjs="$2" lizard="$3" eslint_ok="$4" out=""
     if [ "$node_dom" = true ]; then
         [ "$eslint_ok" = true ] && out="eslint"
         [ "$lizard" = true ] && [ "$nonjs" = true ] && out="${out:+$out }lizard"
         echo "$out"
+    elif [ "$lizard" = true ]; then
+        # Non-node-dominant, lizard-parseable source present (LIZARD_PROBE). #73.
+        if [ "$eslint_ok" = true ]; then
+            out="eslint"
+            [ "$nonjs" = true ] && out="eslint lizard"
+        else
+            out="lizard"   # config-less → lizard covers everything (unchanged)
+        fi
+        echo "$out"
     else
-        echo ""   # non-node-dominant → standalone lizard/scc arms, not the merged path
+        echo ""   # no lizard-parseable source → scc/none arm, not the merged path
     fi
 }
 assert_eq "dominant + non-JS + lizard + eslint → merge" "eslint lizard" "$(complexity_slices true  true  true  true)"
 assert_eq "dominant, no non-JS, eslint ok → eslint"     "eslint"        "$(complexity_slices true  false true  true)"
 assert_eq "#79: dominant + non-JS, NO eslint config → lizard-only" "lizard" "$(complexity_slices true true true false)"
 assert_eq "#79: dominant, no eslint config, no non-JS → empty"     ""       "$(complexity_slices true false true false)"
-assert_eq "not dominant → no merged slices"             ""              "$(complexity_slices false true  true  true)"
+assert_eq "#73: not dominant + JS/TS + non-JS + config → merge"   "eslint lizard" "$(complexity_slices false true  true  true)"
+assert_eq "#73: not dominant + JS/TS only + config → eslint"      "eslint"        "$(complexity_slices false false true  true)"
+assert_eq "#73: not dominant + config-less → lizard (unchanged)"  "lizard"        "$(complexity_slices false true  true  false)"
+assert_eq "#73: not dominant, no lizard → scc arm (no merged slices)" ""          "$(complexity_slices false true  false true)"
 
 echo ""
 echo "#79: record decision — degrade, don't sink; fail/skip only when nothing ran"
