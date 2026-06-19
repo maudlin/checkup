@@ -135,6 +135,8 @@ source "$CHECKUP_HOME/lib/profile.sh"
 source "$CHECKUP_HOME/lib/config.sh"
 # shellcheck source=../lib/source-inventory.sh
 source "$CHECKUP_HOME/lib/source-inventory.sh"
+# shellcheck source=../lib/detect-topology.sh
+source "$CHECKUP_HOME/lib/detect-topology.sh"
 
 # Resolve the scan scope and enumerate the source inventory ONCE, honestly, from
 # the VCS (#75). Everything downstream — the lizard tiers (fed the file list, as
@@ -421,6 +423,37 @@ COVERAGE_NARROWED=false; [ -n "${CHECKUP_SRC_ROOTS:-}" ] && COVERAGE_NARROWED=tr
 # can't run, #79) — surfaced so the gap is loud, never a silent false-pass.
 COVERAGE_UNMEASURED=$(printf '%s\n' "${CPLX_UNMEASURED[@]}" | jq -R . | jq -s 'map(select(length>0))')
 
+# Topology (#78): the scan root is a hypothesis. Tell a single package from a
+# declared workspace (healthy) from an UNDECLARED fan-out (a thin orchestrator
+# root over real packages one level down — a mild structural smell, and the case
+# where the real work lives below where we looked). Phase 1 judges + records the
+# assessment roots; the per-package RECOVER pass that runs the checks in each is a
+# follow-up. Pure classifier in lib/detect-topology.sh; gathering is here.
+TOPO_ROOT_PKG=false; [ -f package.json ] && TOPO_ROOT_PKG=true
+TOPO_ROOT_WS=false; topology_has_workspaces package.json && TOPO_ROOT_WS=true
+TOPO_WSTOOL="$(topology_workspace_tool .)"
+TOPO_ROOT_LOCK=false; topology_has_lockfile . && TOPO_ROOT_LOCK=true
+TOPO_ROOT_REAL=false; topology_has_real_scripts package.json && TOPO_ROOT_REAL=true
+mapfile -t TOPO_CHILDREN < <(topology_children .)
+TOPO_CHILD_COUNT=${#TOPO_CHILDREN[@]}
+TOPO_SHAPE=$(classify_topology "$TOPO_ROOT_PKG" "$TOPO_ROOT_WS" "$TOPO_WSTOOL" "$TOPO_ROOT_LOCK" "$TOPO_ROOT_REAL" "$TOPO_CHILD_COUNT")
+
+# Assessment roots: the dirs the project-built checks SHOULD run in. Only an
+# undeclared fan-out redirects below the scan root; everything else is "." (the
+# root). Capped so a pathological tree can't explode the follow-up recover loop.
+TOPO_CAP="${CHECKUP_MAX_ASSESSMENT_ROOTS:-8}"
+TOPO_CAPPED=false
+TOPO_ASSESSMENT_ROOTS=(".")
+if [ "$TOPO_SHAPE" = "undeclared-fan-out" ]; then
+    TOPO_ASSESSMENT_ROOTS=("${TOPO_CHILDREN[@]}")
+    if [ "${#TOPO_ASSESSMENT_ROOTS[@]}" -gt "$TOPO_CAP" ]; then
+        TOPO_ASSESSMENT_ROOTS=("${TOPO_ASSESSMENT_ROOTS[@]:0:$TOPO_CAP}")
+        TOPO_CAPPED=true
+    fi
+fi
+TOPO_ROOTS_JSON=$(printf '%s\n' "${TOPO_ASSESSMENT_ROOTS[@]}" | jq -R . | jq -s 'map(select(length>0))')
+[ "$TOPO_WSTOOL" = "" ] && TOPO_WSTOOL_JSON=null || TOPO_WSTOOL_JSON="\"$TOPO_WSTOOL\""
+
 # Persist the plan as an agent-facing artefact (sibling to focus.json/by-file.json
 # — deliberately NOT under parsed/, which the renderer counts as checks).
 jq -n \
@@ -434,14 +467,19 @@ jq -n \
     --argjson assessed "${SOURCE_FILE_COUNT:-0}" \
     --arg scope "${SOURCE_SCOPE:-unknown}" --arg excl "$COVERAGE_EXCL" \
     --argjson byArea "${COVERAGE_BY_AREA:-{\}}" --argjson narrowed "$COVERAGE_NARROWED" \
-    --argjson unmeasured "${COVERAGE_UNMEASURED:-[]}" '
-    {schemaVersion:"1.3",
+    --argjson unmeasured "${COVERAGE_UNMEASURED:-[]}" \
+    --arg toposhape "$TOPO_SHAPE" --argjson topowstool "$TOPO_WSTOOL_JSON" \
+    --arg topolock "$TOPO_ROOT_LOCK" --arg toporeal "$TOPO_ROOT_REAL" \
+    --argjson toporoots "$TOPO_ROOTS_JSON" --argjson topochildren "$TOPO_CHILD_COUNT" \
+    --argjson topocapped "$TOPO_CAPPED" '
+    {schemaVersion:"1.4",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
      engines: {complexity:{engine:$ec, reason:$cr, slices:$slices}, duplication:{engine:$ed, reason:$dr}},
      coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea, unmeasured:$unmeasured},
+     topology: {shape:$toposhape, workspaceTool:$topowstool, rootHasLockfile:($topolock=="true"), rootHasRealScripts:($toporeal=="true"), assessmentRoots:$toporoots, childCount:$topochildren, capped:$topocapped},
      overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
 # Print the plan (drawn from the same values → console and detection.json agree).
@@ -456,6 +494,11 @@ COVERAGE_NOTE="   📐 Coverage: ${SOURCE_FILE_COUNT:-0} source files assessed (
 [ "$COVERAGE_NARROWED" = true ] && COVERAGE_NOTE="$COVERAGE_NOTE — NARROWED by CHECKUP_SRC_ROOTS"
 echo -e "$COVERAGE_NOTE"
 [ "${#CPLX_UNMEASURED[@]}" -gt 0 ] && echo -e "   ${YELLOW}⚠️  Not measured:${NC} ${CPLX_UNMEASURED[*]}"
+case "$TOPO_SHAPE" in
+    undeclared-fan-out) echo -e "   ${YELLOW}🧩 Topology:${NC} undeclared fan-out — ${TOPO_CHILD_COUNT} sub-package(s) below an orchestrator root (${TOPO_ASSESSMENT_ROOTS[*]}); the root scan can't see them" ;;
+    declared-workspace) echo -e "   🧩 Topology: declared ${TOPO_WSTOOL:-npm/yarn} workspace" ;;
+    orphan-root)        echo -e "   ${YELLOW}🧩 Topology:${NC} orphan root — a package.json with no real scripts, lockfile or sub-packages" ;;
+esac
 
 # Apply .checkup.yml check toggles (empties a disabled check's command so its
 # run_profiled call takes the honest skip path; enables opt-in checks) BEFORE the
@@ -3137,6 +3180,59 @@ else
     TESTS_TOP=$(jq -n --arg m "$TESTS_MSG" '[{code:"no-tests", severity:"warning", message:$m}]')
     write_parsed "test-presence" "warn" 1 "No test files detected — no visible automated safety net" "$TESTS_TOP" "$TESTS_INTENT"
 fi
+echo ""
+
+# 24b. Project Topology (macro alarm, #78)
+# section:    topology
+# purpose:    Judge whether the scan root is actually the package, or a thin
+#             orchestrator over real packages one level down. A low-quality /
+#             inherited repo often fans out into sub-packages without declaring a
+#             workspace — the real build/test/lint/deps live below where a
+#             root-only scan looks, so the rest of the report is mostly skips /
+#             unmeasured. Declared workspaces (npm/pnpm/yarn/nx/turbo/lerna) are
+#             healthy and do NOT alarm — the discriminator is declared vs not.
+# pass_means: A single package at the root, or a properly declared workspace.
+# fail_means: An undeclared fan-out (orchestrator root + ≥2 self-contained child
+#             packages) or an orphan root — a structural smell, reported warn:
+#             no single entry point, drifting per-package deps, and the root scan
+#             can't see the real packages (assess them with CHECKUP_TARGET).
+print_section "Project Topology"
+echo "Command: classify package layout (single / declared-workspace / fan-out)"
+echo ""
+
+TOPO_INTENT=$(jq -n '{
+    purpose:    "Judge whether the scan root is the real package or a thin orchestrator over sub-packages. The scan root is a hypothesis; an undeclared fan-out means the real work lives below where a root-only scan looks.",
+    pass_means: "A single package at the root, or a properly declared workspace (npm/pnpm/yarn/nx/turbo/lerna).",
+    fail_means: "An undeclared fan-out (orchestrator root + self-contained sub-packages) is a structural smell AND means the project-built checks assessed only the root — point CHECKUP_TARGET at each sub-package, or declare a workspace."
+}')
+
+case "$TOPO_SHAPE" in
+    undeclared-fan-out)
+        TOPO_ROOTS_STR=$(printf '%s, ' "${TOPO_ASSESSMENT_ROOTS[@]}"); TOPO_ROOTS_STR="${TOPO_ROOTS_STR%, }"
+        TOPO_MSG="Undeclared fan-out: ${TOPO_CHILD_COUNT} self-contained sub-package(s) ($TOPO_ROOTS_STR) under an orchestrator root (no root lockfile, no \`workspaces\`, only glue scripts). The project-built checks assessed only the root and can't see them — no single install/build/test entry point and per-package lockfiles drift independently. Assess each with CHECKUP_TARGET, or declare a workspace."
+        echo -e "${YELLOW}⚠️  $TOPO_MSG${NC}"
+        TOPO_TOP=$(jq -n --arg m "$TOPO_MSG" '[{code:"undeclared-fan-out", severity:"warning", message:$m}]')
+        write_parsed "topology" "warn" "$TOPO_CHILD_COUNT" "Undeclared multi-package fan-out — real packages live below the scan root" "$TOPO_TOP" "$TOPO_INTENT"
+        ;;
+    orphan-root)
+        TOPO_MSG="Orphan root: a package.json with no real scripts, no lockfile and no sub-packages — nothing for the project-built checks to build, test or audit."
+        echo -e "${YELLOW}⚠️  $TOPO_MSG${NC}"
+        TOPO_TOP=$(jq -n --arg m "$TOPO_MSG" '[{code:"orphan-root", severity:"warning", message:$m}]')
+        write_parsed "topology" "warn" 1 "Orphan root — package.json with no scripts/lockfile/sub-packages" "$TOPO_TOP" "$TOPO_INTENT"
+        ;;
+    declared-workspace)
+        echo -e "${GREEN}✅ Declared ${TOPO_WSTOOL:-npm/yarn} workspace${NC}"
+        write_parsed "topology" "pass" 0 "Declared ${TOPO_WSTOOL:-npm/yarn} workspace (multi-package, tool-managed)" '[]' "$TOPO_INTENT"
+        ;;
+    single)
+        echo -e "${GREEN}✅ Single package at the scan root${NC}"
+        write_parsed "topology" "pass" 0 "Single package at the scan root" '[]' "$TOPO_INTENT"
+        ;;
+    *)
+        echo -e "${BLUE}ℹ️  No Node package manifest at the root — topology N/A${NC}"
+        write_parsed "topology" "pass" 0 "No root package.json — topology check is Node-specific (N/A)" '[]' "$TOPO_INTENT"
+        ;;
+esac
 echo ""
 
 # 25. Technology Viability (macro alarm, #52)

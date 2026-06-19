@@ -45,6 +45,9 @@ jobs:
       - name: Honest-skip tests
         run: bash test/honest-skips.test.sh
 
+      - name: Topology tests
+        run: bash test/topology.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest
