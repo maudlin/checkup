@@ -29,6 +29,16 @@ fi
 # on the \xNN extension.
 ESC=$'\033'
 
+# Determinism (plan 0001 §A): pin COLLATION so `sort`, glob expansion and any
+# locale-sensitive ordering are reproducible across hosts — otherwise the locale
+# decides tie order, which decides which findings survive the `head -N` / top-N
+# caps, i.e. *which* findings appear. We pin only LC_COLLATE (and clear LC_ALL so
+# it's honoured), leaving LC_CTYPE alone so UTF-8 handling in sed/grep is
+# unchanged on both GNU and BSD (the BSD-sed care taken elsewhere still holds).
+# jq's string ordering is codepoint-based and already locale-independent.
+unset LC_ALL
+export LC_COLLATE=C
+
 # Resolve the checkup install location (for sourcing lib/ and invoking the
 # renderer) independently of the project being scanned. checkup.sh lives in bin/,
 # so the install root is one level up.
@@ -2561,7 +2571,8 @@ else
         gsub(/"/, "", f)
         if ($2+0 > max[f]) max[f] = $2+0
     }
-    END { for (f in max) printf "%s\t%d\n", f, max[f] }' "$OUT_DIR/complexity-full.csv")
+    END { for (f in max) printf "%s\t%d\n", f, max[f] }' "$OUT_DIR/complexity-full.csv" \
+        | sort)   # awk associative-array iteration order is implementation-defined; sort for determinism (§A)
 
     # Inner join on file, requiring positive churn. A file untouched in
     # the last 6 months cannot be a hotspot regardless of CCN. Including

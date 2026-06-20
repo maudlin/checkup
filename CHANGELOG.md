@@ -96,8 +96,15 @@ across the whole thing, honestly*.
 - **Honesty harness** — a behavioural test that runs the *real* checkup sections
   against a toolchain-absent fixture (fake `npm` emitting the genuine absence
   diagnostics) and asserts every project-built check `skip`s, never a false
-  pass/fail. The regression net for the #80/#85/#91 class — proven to catch a
-  reintroduced bug (#96, plan 0001 §A).
+  pass/fail, plus a coverage tripwire that fails CI if a new project-built check
+  escapes the net. The regression net for the #80/#85/#91 class — proven to catch
+  a reintroduced bug (#96, plan 0001 §A).
+- **Determinism hardening** — collation is pinned (`LC_COLLATE=C`) so `sort` and
+  glob order are host-independent, single-key truncating sorts gained total
+  tie-breakers, and `awk` associative-array output is sorted. Two runs over the
+  same tree now produce byte-identical findings (modulo the run timestamp) — the
+  groundwork for reproducible reports and future golden characterisation
+  (#96, plan 0001 §A).
 
 ## [0.1.0] - 2026-06-10
 
