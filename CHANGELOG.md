@@ -64,6 +64,13 @@ across the whole thing, honestly*.
 
 ### Fixed
 
+- **Secret scan is calibrated, not just alarmist** (#100): a public-by-design
+  credential — a client-shipped web key (`VITE_`/`NEXT_PUBLIC_`/`REACT_APP_`/… or
+  a Firebase web API key) — is recalibrated from a 🔴 critical "breach" to a
+  `warn`/low **hygiene** item (move to env/secret), instead of relaying the
+  scanner's raw severity. Classified by the var name in the source line (the
+  secret value is never read into the report); conservative — a real secret is
+  never downgraded, and only-public-by-design findings flip the check to `warn`.
 - An ESLint-slice failure no longer **sinks the whole complexity record** on a
   node-dominant polyglot — the non-JS slice is still measured, the JS/TS gap is
   reported as *unmeasured*, audit runs never fetch ESLint over the network, and a
