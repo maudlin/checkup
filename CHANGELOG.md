@@ -64,6 +64,12 @@ across the whole thing, honestly*.
 
 ### Fixed
 
+- **npm-audit leads with runtime risk** (#100): advisories are tagged by
+  provenance (runtime / transitive / dev) via npm's `isDirect` + a `package.json`
+  cross-ref; the summary shows the critical split and the top list leads with real
+  (runtime/transitive) criticals. A critical in a **direct devDependency**
+  (build-time tooling, not shipped) is down-weighted to high and flips the check to
+  `warn` — never a `fail` headline on its own; transitive vulns stay at face value.
 - **Secret scan is calibrated, not just alarmist** (#100): a public-by-design
   credential — a client-shipped web key (`VITE_`/`NEXT_PUBLIC_`/`REACT_APP_`/… or
   a Firebase web API key) — is recalibrated from a 🔴 critical "breach" to a
