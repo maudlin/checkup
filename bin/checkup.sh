@@ -150,6 +150,8 @@ source "$CHECKUP_HOME/lib/config.sh"
 source "$CHECKUP_HOME/lib/source-inventory.sh"
 # shellcheck source=../lib/detect-topology.sh
 source "$CHECKUP_HOME/lib/detect-topology.sh"
+# shellcheck source=../lib/calibrate.sh
+source "$CHECKUP_HOME/lib/calibrate.sh"
 
 # Resolve the scan scope and enumerate the source inventory ONCE, honestly, from
 # the VCS (#75). Everything downstream — the lizard tiers (fed the file list, as
@@ -2456,7 +2458,7 @@ echo ""
 GITLEAKS_INTENT=$(jq -n '{
     purpose:    "Scan the working tree for committed/checked-out secrets.",
     pass_means: "Zero findings (project .gitleaks.toml allowlist if present, else gitleaks defaults).",
-    fail_means: "Any finding is a real signal — investigate. Without a project allowlist, expect some false positives to triage."
+    fail_means: "A real secret is a fail — investigate (without a project allowlist, expect some false positives to triage). A public-by-design key (client-shipped web key — VITE_/NEXT_PUBLIC_/… prefix, or a Firebase web API key) is recalibrated to warn: hygiene (move to env/secret), not a breach, since it is exposed in the client bundle by construction."
 }')
 
 MAX_SCORE=$((MAX_SCORE + 5))
@@ -2479,30 +2481,65 @@ if [ "$LAST_EXIT" = "127" ]; then
 elif ! is_valid_json "$GITLEAKS_REPORT"; then
     write_failed "gitleaks" "gitleaks produced no parseable report (exit $LAST_EXIT)" "$GITLEAKS_INTENT"
 else
-    GITLEAKS_TOTAL=$(jq 'length' "$GITLEAKS_REPORT")
-
-    GITLEAKS_TOP=$(jq -c '
-        sort_by(.File, .StartLine)
-        | .[0:10]
-        | map({
-            file: .File,
-            line: .StartLine,
-            code: .RuleID,
-            severity: "critical",
-            message: ((.Description // "") | gsub("\\s+"; " ") | .[0:200])
-        })
-    ' "$GITLEAKS_REPORT")
+    # Calibration (#100, §B): a public-by-design credential — a client-shipped
+    # web key (build-tool public prefixes VITE_/NEXT_PUBLIC_/REACT_APP_/…, or a
+    # Firebase web API key) — is HYGIENE, not a breach: it's exposed in the client
+    # bundle by construction, so secrecy was never the control. Recalibrate its
+    # severity (low, not critical) + annotate, instead of relaying the scanner's
+    # raw "critical → data breach"; never SUPPRESS — still listed, still worth
+    # moving to env/secret, just not a 🔴 headline alarm.
+    #
+    # gitleaks --redact zeroes .Match (the secret value never reaches our
+    # artifacts), so the VAR NAME — the signal — survives only in the source file.
+    # Augment each finding with a `pbd` flag read from its named line via the
+    # shared is_public_by_design matcher (lib/calibrate.sh); the line is read to
+    # classify but NEVER emitted. Conservative: an unreadable file / no-match line
+    # leaves the finding at full severity. (cwd is $TARGET, so .File resolves.)
+    GITLEAKS_AUG=$(jq -c '.[]' "$GITLEAKS_REPORT" | while IFS= read -r _gf; do
+        _file=$(printf '%s' "$_gf" | jq -r '.File'); _line=$(printf '%s' "$_gf" | jq -r '.StartLine')
+        _ctx=""; [ -f "$_file" ] && _ctx=$(sed -n "${_line}p" "$_file" 2>/dev/null)
+        if is_public_by_design "$_ctx"; then _pbd=true; else _pbd=false; fi
+        printf '%s' "$_gf" | jq -c --argjson pbd "$_pbd" '. + {_pbd:$pbd}'
+    done | jq -s '.')
+    GITLEAKS_CLASSIFIED=$(printf '%s' "$GITLEAKS_AUG" | jq -c '
+        { total: length,
+          pbd: ([ .[] | select(._pbd) ] | length),
+          top: (
+            sort_by(._pbd, .File, .StartLine)   # real (false) before public-by-design (true)
+            | .[0:10]
+            | map({
+                file: .File,
+                line: .StartLine,
+                code: .RuleID,
+                severity: (if ._pbd then "low" else "critical" end),
+                message: ( ((.Description // "") | gsub("\\s+"; " ") | .[0:160])
+                           + (if ._pbd then " — likely public-by-design (client-shipped key); move to env/secret as hygiene, not a breach" else "" end) )
+              })
+          )
+        }
+    ')
+    GITLEAKS_TOTAL=$(echo "$GITLEAKS_CLASSIFIED" | jq '.total')
+    GITLEAKS_PBD=$(echo "$GITLEAKS_CLASSIFIED" | jq '.pbd')
+    GITLEAKS_TOP=$(echo "$GITLEAKS_CLASSIFIED" | jq -c '.top')
+    GITLEAKS_REAL=$((GITLEAKS_TOTAL - GITLEAKS_PBD))
 
     if [ "$GITLEAKS_TOTAL" = "0" ]; then
         echo -e "${GREEN}✅ No secrets detected (5/5)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 5))
         GITLEAKS_STATUS="pass"
         GITLEAKS_SUMMARY="No secrets detected in working tree"
-    else
-        echo -e "${RED}❌ $GITLEAKS_TOTAL secret finding(s) (0/5)${NC}"
+    elif [ "$GITLEAKS_REAL" -gt 0 ]; then
+        echo -e "${RED}❌ $GITLEAKS_REAL secret finding(s) (0/5)${NC}"
         echo "   Review $GITLEAKS_REPORT for redacted details."
         GITLEAKS_STATUS="fail"
-        GITLEAKS_SUMMARY="$GITLEAKS_TOTAL finding(s)"
+        GITLEAKS_SUMMARY="$GITLEAKS_REAL secret finding(s)"
+        [ "$GITLEAKS_PBD" -gt 0 ] && GITLEAKS_SUMMARY="$GITLEAKS_SUMMARY + $GITLEAKS_PBD public-by-design (hygiene)"
+    else
+        # Only public-by-design keys: hygiene, not a breach → warn, partial credit.
+        echo -e "${YELLOW}⚠️  $GITLEAKS_PBD public-by-design (client-shipped) key(s) — hygiene, not a breach (3/5)${NC}"
+        HEALTH_SCORE=$((HEALTH_SCORE + 3))
+        GITLEAKS_STATUS="warn"
+        GITLEAKS_SUMMARY="$GITLEAKS_PBD public-by-design (client-shipped) key(s) — hygiene, not a breach; move to env/secret"
     fi
 
     write_parsed "gitleaks" "$GITLEAKS_STATUS" "$GITLEAKS_TOTAL" \
