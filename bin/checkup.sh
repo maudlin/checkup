@@ -826,7 +826,7 @@ TYPE_WARNING_COUNT=${TYPE_WARNING_COUNT:-0}
 # we tally them separately, strip them from top[], and degrade to skip if they
 # are the *only* output.
 TAL_INFRA_RE='[Pp]arsing error:.*(project service|TSConfig does not include|parserOptions.project|allowDefaultProject)'
-TAL_INFRA_COUNT=$(grep -cE "$TAL_INFRA_RE" "$LAST_RAW")
+TAL_INFRA_COUNT=$(grep -cE "$TAL_INFRA_RE" "$LAST_RAW" || true)   # grep -c exits 1 on zero matches → would abort under set -e
 TAL_INFRA_COUNT=${TAL_INFRA_COUNT:-0}
 
 # Same ESLint output shape — reuse the awk parser (skipping infra parse errors)

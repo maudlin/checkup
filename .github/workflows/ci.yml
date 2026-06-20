@@ -51,6 +51,9 @@ jobs:
       - name: Honesty harness (real sections, toolchain-absent)
         run: bash test/honesty-harness.test.sh
 
+      - name: set -e safety guard
+        run: bash test/set-e-safety.test.sh
+
       - name: Calibration tests
         run: bash test/calibration.test.sh
 
