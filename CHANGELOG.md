@@ -93,6 +93,11 @@ across the whole thing, honestly*.
 
 - CI scans the tree **and** issue/PR text for internal references, plus a secret
   self-scan (#20, #66); sealed (`--network none`) runs recommended (ADR-0008, #30).
+- **Honesty harness** — a behavioural test that runs the *real* checkup sections
+  against a toolchain-absent fixture (fake `npm` emitting the genuine absence
+  diagnostics) and asserts every project-built check `skip`s, never a false
+  pass/fail. The regression net for the #80/#85/#91 class — proven to catch a
+  reintroduced bug (#96, plan 0001 §A).
 
 ## [0.1.0] - 2026-06-10
 
