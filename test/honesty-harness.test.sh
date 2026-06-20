@@ -108,6 +108,39 @@ for slug in $PROJECT_BUILT; do
     [ "${cnt:-0}" -eq 0 ] || notok "$slug — count=$cnt on a toolchain-absent repo (phantom findings)"
 done
 
+# ── Coverage tripwire (plan 0001 §A) ──────────────────────────────────────────
+# The behavioural assertions above check a HARDCODED list of slugs. That list can
+# drift: a newly-added project-built check would silently escape the honesty net.
+# This tripwire keeps them in sync — it asserts the set of profile-driven checks
+# in bin/checkup.sh (the project-built node checks) is exactly the set we know
+# about, so adding one without honesty coverage fails CI and forces a conscious
+# decision (cover it behaviourally above, or allowlist it here with a reason).
+echo ""
+echo "coverage tripwire — every project-built (profiled) check is accounted for"
+
+# Profiled checks that are NOT node-toolchain-absent honesty targets, with why:
+#   SECURITY — semgrep; cross-stack, runs regardless of the Node toolchain and
+#              guards on its own JSON validity, not toolchain_absent.
+ALLOWLIST="SECURITY"
+
+# The profiled checks we KNOW are covered by the behavioural assertions above
+# (run_profiled NAME → a project-built slug the harness verifies skips).
+EXPECTED_COVERED="AUDIT BUILD COVERAGE DEPS FORMAT LINT MUTATION OUTDATED TEST TYPEAWARE TYPECHECK UNUSED"
+
+ACTUAL=$(grep -oE 'run_profiled [A-Z]+' "$CHECKUP_HOME/bin/checkup.sh" | awk '{print $2}' | sort -u)
+# Drop the allowlisted ones.
+for a in $ALLOWLIST; do ACTUAL=$(printf '%s\n' "$ACTUAL" | grep -vx "$a"); done
+ACTUAL=$(printf '%s\n' "$ACTUAL" | grep -v '^$' | sort -u)
+WANT=$(printf '%s\n' "$EXPECTED_COVERED" | tr ' ' '\n' | sort -u)
+
+if [ "$ACTUAL" = "$WANT" ]; then
+    ok "profiled check set matches the honesty-covered set (no unguarded checks)"
+else
+    notok "profiled check set drifted — cover the new check in the harness above, or allowlist it"
+    echo "    unexpected (profiled, not covered): $(comm -23 <(printf '%s\n' "$ACTUAL") <(printf '%s\n' "$WANT") | tr '\n' ' ')"
+    echo "    missing (expected, not found):      $(comm -13 <(printf '%s\n' "$ACTUAL") <(printf '%s\n' "$WANT") | tr '\n' ' ')"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
