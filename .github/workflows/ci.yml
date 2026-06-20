@@ -48,6 +48,9 @@ jobs:
       - name: Topology tests
         run: bash test/topology.test.sh
 
+      - name: Honesty harness (real sections, toolchain-absent)
+        run: bash test/honesty-harness.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest
