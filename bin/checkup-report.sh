@@ -12,6 +12,15 @@
 
 set -e
 
+# Determinism (plan 0001 §A): pin COLLATION so the parsed-file glob and any
+# `sort` order reproducibly, independent of the host locale — the glob order
+# feeds jq's stable sorts, so an unpinned locale could change which findings land
+# in the truncated top-N views. Only LC_COLLATE is pinned (LC_ALL cleared so it's
+# honoured); LC_CTYPE is left alone so UTF-8 handling is unchanged. jq string
+# ordering is already codepoint-based and locale-independent.
+unset LC_ALL
+export LC_COLLATE=C
+
 # Resolve the project being reported on, independently of where checkup is
 # installed. Same resolution as checkup.sh: CHECKUP_TARGET, else the enclosing git
 # repo top level, else the current directory.
@@ -136,7 +145,9 @@ TOP_PROBLEMS=$(jq -s '
         | map(. + {tool: $check.slug, tool_status: $check.status})
     )
     | flatten
-    | sort_by(.severity | sevWeight)
+    # Total tie-breakers after the severity key so the top-30 SET is stable
+    # regardless of input order (§A) — not just the order within a severity band.
+    | sort_by((.severity | sevWeight), (.tool // ""), (.file // ""), (.line // 0), (.message // ""))
     | .[0:30]
 ' "${PARSED_FILES[@]}")
 
@@ -212,7 +223,7 @@ BY_FILE=$(jq -s \
             | map({slug: .[0].slug, count: length, severities: [.[].severity] | unique})
         )
     })
-    | sort_by(-.severityScore, -.total)
+    | sort_by(-.severityScore, -.total, .file)
 ' "${PARSED_FILES[@]}")
 
 # Persist the full ranking for LLM/trend consumers
@@ -288,7 +299,7 @@ FOCUS=$(jq -s \
             | map(.axis + ": " + .detail)
         )
       })
-    | sort_by(-.axisCount, -.focusScore)
+    | sort_by(-.axisCount, -.focusScore, .file)
 ' "${PARSED_FILES[@]}")
 
 # Persist the full ranking for LLM / CI / trend consumers
