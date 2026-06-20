@@ -1372,8 +1372,20 @@ elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     # .gitignore, so scanning a root would ingest generated/vendored files. This
     # branch is gated on LIZARD_PROBE, derived from the same inventory, so the
     # list is non-empty.
-    mapfile -d '' DUP_FILES < <(inventory_paths "$INV_LIZARD_RE")
-    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${DUP_FILES[@]}"
+    # Feed the file list via a temp file + xargs (run_tool_filelist), not a bash
+    # array on argv — a large tree overflows ARG_MAX otherwise (exit 126).
+    DUP_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$DUP_LIST"
+    DUP_N=$(filelist_count "$DUP_LIST")
+    if [ "$DUP_N" -gt "$CHECKUP_LIZARD_MAX_FILES" ]; then
+        # Single-pass clone detection holds every file's tokens in memory; on a
+        # huge (often generated/corpus-bloated) tree it OOMs and kills the run.
+        # Skip honestly rather than fall over — never a false "0% → clean".
+        rm -f "$DUP_LIST"
+        echo -e "${BLUE}ℹ️  Skipped — $DUP_N files exceeds the lizard single-pass limit ($CHECKUP_LIZARD_MAX_FILES)${NC}"
+        write_skipped "duplication" "lizard duplication skipped — $DUP_N files exceeds the single-pass limit ($CHECKUP_LIZARD_MAX_FILES); clone detection holds all tokens in memory. Narrow with CHECKUP_SRC_ROOTS or raise CHECKUP_LIZARD_MAX_FILES." "$DUP_INTENT"
+    else
+    run_tool_filelist "Code Duplication (lizard)" "$DUP_LIST" "$LIZARD_BIN" -Eduplicate
+    rm -f "$DUP_LIST"
     # lizard always prints the "Duplicates" banner once it has analysed files;
     # its absence means the invocation itself failed (bad flag, no readable
     # source) — which must NOT be read as "0% → clean pass".
@@ -1440,6 +1452,7 @@ PY
         fi
         write_parsed "duplication" "$DUP_STATUS" "$DUP_COUNT" "${DUP_RATE}% duplicate token rate across $DUP_COUNT clone block(s) (lizard; Classic ASP not tokenised)" "$DUP_TOP" "$DUP_INTENT"
     fi
+    fi   # end CHECKUP_LIZARD_MAX_FILES cap guard
 else
     echo -e "${BLUE}ℹ️  Skipped — $DUP_REASON${NC}"
     write_skipped "duplication" "$DUP_REASON" "$DUP_INTENT"
@@ -1864,8 +1877,10 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
     # lizard never ingests gitignored/generated files.
     LIZARD_FINDINGS='[]'; LIZARD_RAN=false
     if [ "$RUN_LIZARD_SLICE" = true ]; then
-        mapfile -d '' NONJS_FILES < <(inventory_paths "$INV_NONJS_RE")
-        run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${NONJS_FILES[@]}"
+        # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
+        NONJS_LIST=$(mktemp); inventory_paths "$INV_NONJS_RE" > "$NONJS_LIST"
+        run_tool_filelist "Complexity (lizard)" "$NONJS_LIST" "$CPLX_LIZARD" --csv --CCN 9999
+        rm -f "$NONJS_LIST"
         if [ ! -s "$LAST_RAW" ]; then
             echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT)${NC}"
         else
@@ -1975,8 +1990,10 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
     # the canonical lizard CSV (col 2 = CCN, col 7 = file) git-hotspots consumes.
     # Fed the VCS-tracked file list (#75) — lizard doesn't honour .gitignore.
     # Gated on LIZARD_PROBE (same inventory), so the list is non-empty.
-    mapfile -d '' CPLX_LIZARD_FILES < <(inventory_paths "$INV_LIZARD_RE")
-    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${CPLX_LIZARD_FILES[@]}"
+    # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
+    CPLX_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$CPLX_LIST"
+    run_tool_filelist "Complexity (lizard)" "$CPLX_LIST" "$CPLX_LIZARD" --csv --CCN 9999
+    rm -f "$CPLX_LIST"
 
     # lizard --csv is CSV, not JSON — validate by content, not is_valid_json. The
     # extension probe already confirmed lizard-parseable source exists, so empty
