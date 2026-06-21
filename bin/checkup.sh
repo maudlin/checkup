@@ -155,6 +155,13 @@ source "$CHECKUP_HOME/lib/detect-topology.sh"
 # shellcheck source=../lib/calibrate.sh
 source "$CHECKUP_HOME/lib/calibrate.sh"
 
+# Repo-local overrides (.checkup.yml) are consulted FIRST — before scope is even
+# enumerated — because an `exclude:` list must reach BOTH the source inventory and
+# the scc keep-set below (#109/#18), and the command/stack overrides it sets must
+# be in place before the profile loads and the routing runs. Absent file → no-op.
+CHECKUP_OVERRIDDEN=false
+load_checkup_config "$TARGET/.checkup.yml"
+
 # Resolve the scan scope and enumerate the source inventory ONCE, honestly, from
 # the VCS (#75). Everything downstream — the lizard tiers (fed the file list, as
 # lizard does NOT honour .gitignore), the git-forensic axes (SCAN_ROOTS), the
@@ -211,11 +218,9 @@ MAX_SCORE=0
 # never a false route. A .checkup.yml override layer is a deliberate follow-up.
 print_section "Stack Detection"
 
-# Repo-local overrides (.checkup.yml) are consulted FIRST: command overrides set
-# CHECKUP_CMD_* before the profile loads (so they win), and stack.force/suppress
-# steer the routing below. Absent file → a pure no-op.
-CHECKUP_OVERRIDDEN=false
-load_checkup_config "$TARGET/.checkup.yml"
+# .checkup.yml was already loaded up front (before scope enumeration) so command
+# overrides set CHECKUP_CMD_* before the profile loads, stack.force/suppress steer
+# the routing below, and exclude: reached the inventory + scc keep-set.
 
 # scc resolves the language breakdown. Probe conventional out-of-PATH locations
 # (a user-space install) before giving up — same set the stats/viability sections use.

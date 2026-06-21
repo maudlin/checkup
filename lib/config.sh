@@ -19,13 +19,18 @@
 #     test: "…"  build: "…"  typecheck: "…"  lint: "…"  format: "…"
 #     typeaware: "…"  deps: "…"  unused: "…"  coverage: "…"  mutation: "…"
 #     security: "…"  audit: "…"  outdated: "…"   # "" disables that command
+#   exclude: [glob, …]       # cross-scanner exclude globs (#18) — additive with
+#                            # the CHECKUP_EXCLUDE env var; reaches every engine
+#                            # (lizard inventory AND scc keep-set, #109). Top-level
+#                            # (not nested). Directory globs work: `vendor/js/*`.
 #
 # Grammar: `key: value` and one level of `section:`-nested `  key: value`;
 # inline flow lists `[a, b]`; `#` comments; quoted or bare scalars. Block-style
 # (`- item`) lists are out of scope on the bash path (use inline `[…]`).
 #
 # Outputs (consumed by bin/checkup.sh): CHECKUP_FORCE_STACK, CHECKUP_SUPPRESS_STACKS,
-# CHECKUP_DISABLE, CHECKUP_ENABLE, CHECKUP_CMD_* (commands), CHECKUP_OVERRIDDEN.
+# CHECKUP_DISABLE, CHECKUP_ENABLE, CHECKUP_CMD_* (commands), CHECKUP_EXCLUDE
+# (merged with the env var), CHECKUP_OVERRIDDEN.
 
 _cfg_trim()   { printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 _cfg_unquote(){ # strip one layer of matching single/double quotes
@@ -69,7 +74,10 @@ load_checkup_config() {  # $1 = path to .checkup.yml
             # top-level: "section:" or "key: value"
             key="$(_cfg_trim "${raw%%:*}")"; val="$(_cfg_trim "${raw#*:}")"
             if [ -z "$val" ]; then section="$key"; continue; fi
-            section=""                                  # a top-level scalar (e.g. version) — ignored
+            section=""
+            # A top-level scalar/list — only `exclude:` is recognised (other
+            # top-level scalars, e.g. a `version:`, are deliberately ignored).
+            [ "$key" = "exclude" ] && _cfg_apply toplevel exclude "$val"
         else
             # nested "  key: value"
             local t; t="$(_cfg_trim "$raw")"
@@ -105,6 +113,19 @@ _cfg_apply() {  # $1 = section, $2 = key, $3 = raw value
             else
                 echo "⚠️  .checkup.yml: unknown command '$key' — ignoring" >&2
             fi;;
+        toplevel)
+            case "$key" in
+                exclude)
+                    # Cross-scanner exclude globs (#18) — additive with any env
+                    # CHECKUP_EXCLUDE; feeds _inventory_excluded so they reach BOTH
+                    # the lizard inventory AND the scc keep-set (#109). Empty → no-op.
+                    local globs; globs="$(_cfg_list "$val" | tr '\n' ' ')"; globs="$(_cfg_trim "$globs")"
+                    if [ -n "$globs" ]; then
+                        CHECKUP_EXCLUDE="$(_cfg_trim "${CHECKUP_EXCLUDE:-} $globs")"
+                        export CHECKUP_EXCLUDE; CHECKUP_OVERRIDDEN=true
+                    fi;;
+                *) echo "⚠️  .checkup.yml: unknown top-level key '$key' — ignoring" >&2;;
+            esac;;
         "") echo "⚠️  .checkup.yml: '$key' outside a known section — ignoring" >&2;;
         *)  echo "⚠️  .checkup.yml: unknown section '$section' — ignoring" >&2;;
     esac
@@ -118,6 +139,7 @@ _cfg_parse_yq() {  # $1 = file
         (.stack.suppress   // [] | "stack suppress [" + (join(", ")) + "]"),
         (.checks.disable   // [] | "checks disable [" + (join(", ")) + "]"),
         (.checks.enable    // [] | "checks enable ["  + (join(", ")) + "]"),
+        (.exclude // [] | select(length > 0) | "toplevel exclude [" + (join(", ")) + "]"),
         (.commands // {} | to_entries[] | "commands " + .key + " " + (.value|tostring))
     ' "$file" 2>/dev/null) || return 1
     local sec key val

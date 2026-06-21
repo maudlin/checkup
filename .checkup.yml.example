@@ -53,7 +53,13 @@ commands:
   # audit:     "npm audit --json"                            # npm-audit
   # outdated:  "npm outdated --json"                         # deps-freshness
 
+# ── Exclude ──────────────────────────────────────────────────────────────────
+# Cross-scanner exclude globs: paths matching any glob are dropped from EVERY
+# engine — the lizard inventory AND the scc-based stats/identity/complexity — so
+# committed generated/vendored code stops drowning the measurement and skewing the
+# stack read. Top-level (not nested). Additive with the CHECKUP_EXCLUDE env var.
+# Directory globs work (a leading match covers the whole subtree): `vendor/js/*`.
+# exclude: [src/generated/*, "vendor/js/*", "*.pb.go"]
+
 # ── Not yet configurable here ────────────────────────────────────────────────
-# - Extra scan excludes: use the CHECKUP_EXCLUDE environment variable for now
-#   (cross-scanner excludes are tracked separately).
 # - Per-check thresholds (complexity CCN, duplication %): planned.
