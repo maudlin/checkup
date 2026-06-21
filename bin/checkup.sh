@@ -1049,7 +1049,7 @@ echo ""
 AUDIT_INTENT=$(jq -n '{
     purpose:    "Scan installed npm dependencies against the GitHub Advisory Database.",
     pass_means: "Zero high/critical advisories. Low/moderate are tolerated as ecosystem noise.",
-    fail_means: "Any critical advisory; high = warn. Run `npm audit fix` for auto-resolvable cases."
+    fail_means: "A runtime- or transitive-tree critical is a fail; high = warn. Findings are tagged by provenance (runtime / transitive / dev) and the report leads with runtime risk — a critical in a direct devDependency is down-weighted (build-time tooling, not shipped) and reads as warn. Run `npm audit fix` for auto-resolvable cases."
 }')
 
 run_profiled AUDIT "Security Vulnerabilities"
@@ -1081,32 +1081,42 @@ else
     LOW_COUNT=$(jq '.metadata.vulnerabilities.low // 0' "$LAST_RAW")
     TOTAL=$((CRIT_COUNT + HIGH_COUNT + MOD_COUNT + LOW_COUNT))
 
-    # Top 10 advisories — one entry per affected package, severity-mapped.
-    # npm audit's `vulnerabilities` is a map keyed by package; we walk it
-    # and take the highest-severity entry per package.
-    AUDIT_TOP=$(jq -c '
-        [.vulnerabilities // {} | to_entries[]
-            | {
-                file: "package.json",
-                line: 1,
-                code: (.value.name + "@" + (.value.range // "?")),
-                severity: ({"critical":"critical","high":"high","moderate":"medium","low":"low","info":"info"}[.value.severity] // "warning"),
-                message: (.value.name + " — " + .value.severity + " (" + ((.value.via | map(if type == "string" then . else (.title // "") end) | join(", "))[0:160]) + ")")
-            }
-        ]
-        | sort_by(({"critical":0,"high":1,"medium":2,"low":3}[.severity] // 4), .code)
-        | .[0:10]
-    ' "$LAST_RAW")
+    # Provenance calibration (#100, §B): tag each advisory runtime / transitive /
+    # dev (direct devDependency) using npm's isDirect + a package.json cross-ref,
+    # lead with runtime, and down-weight only a critical we can PROVE is a direct
+    # devDependency (build-time tooling, not shipped). Transitive stays at face
+    # value (isDirect=false ≠ dev). cwd is the target (or sub-package under #78
+    # recovery), so package.json is the right manifest. lib/audit-provenance.jq is
+    # the single source of truth, shared with the tests.
+    AUDIT_DEPS=$(jq -c '(.dependencies // {}) | keys' package.json 2>/dev/null || echo '[]')
+    AUDIT_DEVDEPS=$(jq -c '(.devDependencies // {}) | keys' package.json 2>/dev/null || echo '[]')
+    AUDIT_CLASSIFIED=$(jq -c --argjson deps "$AUDIT_DEPS" --argjson dev "$AUDIT_DEVDEPS" \
+        -f "$CHECKUP_HOME/lib/audit-provenance.jq" "$LAST_RAW")
+    AUDIT_TOP=$(printf '%s' "$AUDIT_CLASSIFIED" | jq -c '.top')
+    CRIT_NONDEV=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.crit_nondev')
+    CRIT_DEV=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.crit_dev')
+    RUNTIME_CRIT=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.runtime_crit')
+    TRANSITIVE_CRIT=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.transitive_crit')
 
-    if [ "$CRIT_COUNT" -gt 0 ]; then
-        echo -e "${RED}🚨 $CRIT_COUNT critical, $HIGH_COUNT high vulnerabilities (0/10)${NC}"
+    # Provenance-aware split appended to the summary so the headline leads with
+    # runtime risk, not raw totals.
+    CRIT_SPLIT=""
+    [ "$CRIT_COUNT" -gt 0 ] && CRIT_SPLIT=" ($RUNTIME_CRIT runtime, $TRANSITIVE_CRIT transitive, $CRIT_DEV dev-only)"
+
+    if [ "$CRIT_NONDEV" -gt 0 ]; then
+        # A runtime- or transitive-tree critical is a real fail.
+        echo -e "${RED}🚨 $CRIT_COUNT critical$CRIT_SPLIT, $HIGH_COUNT high vulnerabilities (0/10)${NC}"
         AUDIT_STATUS="fail"
-        AUDIT_SUMMARY="$CRIT_COUNT critical, $HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
-    elif [ "$HIGH_COUNT" -gt 0 ]; then
-        echo -e "${YELLOW}⚠️  $HIGH_COUNT high-severity vulnerabilities (5/10)${NC}"
+        AUDIT_SUMMARY="$CRIT_COUNT critical$CRIT_SPLIT, $HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
+    elif [ "$HIGH_COUNT" -gt 0 ] || [ "$CRIT_DEV" -gt 0 ]; then
+        # Only dev-direct criticals and/or highs → warn (build-time criticals are
+        # not a production breach; highs are warn as before).
+        WARN_NOTE="$HIGH_COUNT high"
+        [ "$CRIT_DEV" -gt 0 ] && WARN_NOTE="$CRIT_DEV dev-only critical (build-time), $HIGH_COUNT high"
+        echo -e "${YELLOW}⚠️  $WARN_NOTE vulnerabilities (5/10)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 5))
         AUDIT_STATUS="warn"
-        AUDIT_SUMMARY="$HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
+        AUDIT_SUMMARY="$WARN_NOTE, $MOD_COUNT moderate, $LOW_COUNT low"
     else
         echo -e "${GREEN}✅ No high/critical vulnerabilities (10/10)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 10))
