@@ -1,208 +1,272 @@
-# Plan 0002 — First-party source: scan-stage classification of generated/vendored code
+# Plan 0002 — First-party source: propose → confirm → execute
 
 > **Status: RFC / draft — to be stress-tested, not yet approved.** A mutable
-> working plan, not an ADR. Nothing here is committed until the signal hierarchy,
-> the exclude-vs-flag boundary (§4), the over-exclusion guards (§7) and the cost
-> ceiling (§6) are resolved. Implementation is separate, phased issues filed only
-> after this lands. Tracking: #107.
+> working plan, not an ADR. Tracking: #107. Reframed after a spike (§9) + two
+> design corrections: the mechanism is **subtractive, not an allowlist** (§4), and
+> checkup is **operator-driven, never a CI gate** (§2) — which makes a
+> *propose → confirm → execute* flow the natural spine rather than a silent scan.
 
 ## 1. Problem
 
 checkup's job is to front-load *the gestalt of the codebase this team owns*.
 Generated and vendored code is, by definition, **not the team's maintenance
 surface** — so measuring it doesn't just add noise, it *lies about the gestalt*.
-We've now hit this from two directions on real repos:
+Two failure modes, both seen on real repos:
 
 - **Identity skew** — *dotCMS*: committed vendored JS made a Java CMS read
   **node-primary 41% (high confidence)**. By *lines* node leads (41% vs Java 31%);
-  by *files* the Java tree dominates ~4:1 (`dotCMS/` 10,824 files vs `core-web/`
-  2,943). Vendored/minified JS has huge lines-per-file, inflating the line share.
-  Wrong identity → wrong engine routing. (This is #78 Repro B.)
-- **Measurement drowning** — *corvus-jsonschema*: **~95% of source files carry a
-  generated marker** (`DO NOT EDIT` / `@generated`) and there are **7 vendored
-  submodules** (`JSON-Schema-Test-Suite`, …). Result: 14M "lines" / 40k files, a
-  complexity read over machine output (6,620 "hotspots"), and the lizard
-  overflow/OOM we had to patch (#105) — *which only happened because we fed the
-  engines 39k mostly-generated files.*
+  by *files* the Java tree dominates ~4:1 (`dotCMS/` 10,824 vs `core-web/` 2,943).
+  Vendored/minified JS has huge lines-per-file, inflating the line share → wrong
+  identity → wrong engine routing. (This is #78 Repro B.)
+- **Measurement drowning** — *corvus-jsonschema*: ~90% of source files carry a
+  generated marker + 7 vendored submodules → 14M "lines", a complexity read over
+  machine output, and the lizard overflow/OOM we patched in #105 — *which only
+  happened because we fed the engines 39k mostly-generated files.*
 
 **Root cause (single):** checkup conflates *files in the repo* with *first-party
-source*. The lizard robustness bugs (#105), the dominance skew (#78 Repro B) and
-the drowning are **the same root cause**.
+source*. The lizard robustness bugs (#105), the identity skew (#78 Repro B) and
+the drowning are the same root cause.
 
 **Principle (continuity with plan 0001):** *the file set is a hypothesis* — the
-sibling of "*the scan root is a hypothesis*" (#78 topology). Don't confuse what's
-on disk with what the team owns.
+sibling of "*the scan root is a hypothesis*". Don't confuse what's on disk with
+what the team owns. And — the key move — **don't resolve that hypothesis
+silently: propose it, and let the operator confirm.**
 
-## 2. Three sets, and where #75 left us
+## 2. The spine — propose → confirm → execute
+
+checkup is **operator-driven and never a CI gate** (ADR-0009: "grade OK, gate
+never"). There is essentially always a human auditing or an agent driving. That
+removes the "must run unattended in a pipeline" constraint and makes the natural
+front door for a *localiser* not a silent scan but a brief orientation:
+
+1. **PROPOSE** — a cheap, deterministic pre-pass: enumerate the inventory,
+   classify generated/vendored/test-corpus, detect topology, compute the
+   lines-vs-files skew. Emit a **proposed scope**: the default first-party set
+   (§4) + any *suggested narrowing* + a ready-to-edit `.checkup.yml`. This is
+   where the **fuzzy signals become prompts** (§6), not after-the-fact apologies.
+   `detection.json` already does ~90% of this work.
+2. **CONFIRM / tighten** — the operator ratifies or narrows the net. Two
+   modalities (§7): a human answers a prompt; an agent reads the proposal, writes
+   the config and re-invokes; a hands-off run `--accept`s the safe proposal.
+3. **EXECUTE** — measure the *agreed* first-party scope, deterministically,
+   against the captured config.
+
+The first thing checkup front-loads is therefore **"here's my read of what this
+codebase *is* and what I'll measure — agree?"** — collaborative orientation, not a
+gate. The subtractive engine (§4–§6) produces the *proposal*; the operator's
+ratification is the *decision*; the captured config keeps the run *reproducible*.
+
+## 3. Three sets, and where #75 left us
 
 1. **On disk** (working tree)
 2. **VCS-tracked** (`git ls-files`, `.gitignore`-aware) — where **#75** moved us
 3. **First-party, human-maintained source** — what health is *actually about*
 
 #75 took us (1)→(2). Committed generated/vendored code is VCS-tracked but **not**
-first-party — the entire gap between (2) and (3), and where both failures live.
-This plan is the (2)→(3) move.
+first-party — the entire gap between (2) and (3). This plan is the (2)→(3) move,
+*with a confirm step* so (3) is never inferred silently.
 
-## 3. The classification is not binary — treat by category × check
+## 4. Why subtractive, not an allowlist (the include-vs-exclude decision)
 
-"Generated", "vendored" and "test-corpus" want *different* treatment per check:
+The proposal is built by **exclusion** (start from everything, subtract
+generated/vendored), not by an **include-list** of first-party roots. This is a
+deliberate, settled choice:
+
+- **No positive first-party signal exists.** Nobody marks hand-written code.
+  First-party is defined by the *absence* of generated/vendored markers — whereas
+  generated/vendored code *announces itself* (`DO NOT EDIT`/`@generated`, `vendor/`,
+  submodules, `.min.js`, `linguist-generated`). The reliable signal is negative,
+  so the mechanism must be subtractive. (GitHub Linguist — the canonical solver of
+  "what code counts" — is subtractive for the same reason.)
+- **The failure modes are asymmetric.** Exclude fails **loud-wrong** (measure some
+  junk you have no rule for → visible weird hotspots/inflation). An allowlist fails
+  **quiet-wrong** (first-party code that doesn't match an include rule is *silently
+  dropped* → a confidently-clean report over missing code — the #85 false-clean).
+  For a health tool, loud-wrong beats quiet-wrong. **#75 already settled this** by
+  killing the `src server` include-guess for exactly this reason.
+- **We already use include — on the axis where it's reliable.** The inventory is
+  **include-by-type** (`SOURCE_EXT_RE` allowlists `.cs/.ts/.py/…`) **+
+  exclude-by-provenance** (markers/conventions). Each axis matched to where its
+  reliable signal lives. "Include or exclude?" is a false binary.
+- **The allowlist's right home is operator ratification, not tool inference.**
+  `CHECKUP_SRC_ROOTS` *is* an include-list — but asserted by someone who knows, not
+  guessed. It maps to mode: **audit** (inherited repo — you can't know the
+  first-party roots → must propose-by-exclusion) vs **tailored** (your repo — you
+  can pre-assert them). The CONFIRM step (§2) is where exclusion-proposal meets
+  human/agent inclusion-knowledge.
+- **Framing is positive even though the mechanism is subtractive:** the report
+  says *"N first-party files assessed; M generated, K vendored excluded"* — the
+  best of both.
+
+## 5. The classification is not binary — treat by category × check
 
 | Category | maintain? | ship? | exclude from | keep in |
 |---|---|---|---|---|
 | **Generated** (codegen, ORM, protobuf, OpenAPI clients) | no (regenerate) | maybe | complexity, duplication, stats, **identity** | — |
 | **Vendored** (copied 3rd-party, bundles) | no | **yes** | maintainability, **identity** | **security / supply-chain** (you ship it → its CVEs/secrets are *yours*) |
-| **Test corpora / fixtures** (submodule'd suites) | no | no | almost everything | its *presence* is a signal (a conformance project) |
+| **Test corpora / fixtures** (submodule'd suites) | no | no | almost everything | its *presence* is a signal |
 
-Implication: this is **not** a blanket exclude. Vendored code's vulnerabilities
-are the team's risk; its style isn't. The engine that consumes the inventory must
-know *why* a file was excluded, so security can opt vendored back in (§5, §9).
+Not a blanket exclude: security checks may opt vendored back in (the consuming
+engine must know *why* a file was set aside).
 
-## 4. Two tiers — ACT at the scan stage, FLAG at the output stage
+## 6. Signal hierarchy — strong signals EXCLUDE, fuzzy signals PROMPT
 
-The alarm belongs at the **scan stage** (the inventory builder, `lib/source-
-inventory.sh` — the #75 chokepoint every engine reads from), because acting there
-is the *cure* (stop measuring junk) not an *apology* (measure it, then caveat).
-But what we may safely **exclude** vs only **flag** maps to signal reliability —
-because **over-exclusion is the dangerous direction** (silently dropping
-first-party code is a false-clean, the #85 sin in a new dress).
+The reliability of a signal decides whether the propose step **excludes on it
+silently** or **surfaces it as a confirm-step prompt** — because over-exclusion
+(silently dropping first-party code) is the dangerous direction.
 
-- **Scan stage — ACT (exclude from the inventory), on HIGH-confidence signals.**
-  Author-declared or near-universal: safe to remove and report.
-- **Output stage — FLAG (lower confidence / caveat), on FUZZY signals.** Aggregate
-  heuristics too weak to silently exclude on; they catch what has no scan-time
-  tell (dotCMS's markerless vendored bundles).
-
-This boundary is the heart of the plan: *exclude only on strong evidence; flag on
-the rest; never silently drop first-party code.*
-
-## 5. Signal hierarchy (strongest first)
-
-**Scan-stage (safe to exclude on):**
-1. **`.gitattributes` `linguist-generated` / `linguist-vendored`** — repo-author
-   declared; the strongest signal. Read via `git check-attr` (let git parse the
-   patterns/precedence, don't reimplement `.gitattributes`):
-   `git ls-files -z | git check-attr --stdin -z linguist-generated linguist-vendored`.
-2. **git submodules** (`.gitmodules`) — vendored by definition.
-   *Verify first (§9): if the inventory's git tier uses `git ls-files`, submodule
-   contents are gitlinks and already absent — so this mainly matters for the
-   `fd`/`find` fallback tiers and for sub-trees that are dirs-not-submodules.*
-3. **Generated-file markers** — `^.{0,40}(DO NOT EDIT|@generated|<auto-generated>|
-   Code generated .* DO NOT EDIT)` in the first ~2–3 lines. Near-universal (Go
-   spec-level), deterministic, and catches generated files *outside* convention
-   dirs (corvus's scattered `*.JsonSchema.cs`). This is the big accuracy win.
+**Auto-exclude in the proposal (high-confidence):**
+1. **`.gitattributes` `linguist-generated`/`-vendored`** — author-declared.
+   Resolve via `git check-attr` (let git parse it), not a hand-rolled parser.
+2. **git submodules** (`.gitmodules`) — vendored by definition. *(Verify: the
+   git tier's `git ls-files` already drops submodule gitlinks — §9 spike confirmed
+   — so this mainly matters for the fd/find tiers.)*
+3. **Generated-file markers** — `DO NOT EDIT`/`@generated`/`<auto-generated>`/
+   `Code generated` in the first ~3 lines. Near-universal, deterministic; catches
+   generated files *outside* convention dirs. **The big lever (§9).**
 4. **Convention dirs + minified/snapshot suffixes** — already in
-   `_inventory_excluded` (node_modules, dist, build, vendor, third_party,
-   `*.min.js`, …). Keep; extend cautiously.
+   `_inventory_excluded`.
 
-**Output-stage (only safe to flag on):**
-5. **Lines-vs-files dominance disagreement** — when the line-share leader isn't
-   the file-share leader, the line-heavy stack is inflated by high-lines-per-file
-   (generated/vendored/minified) → lower `primaryConfidence`, emit a skew note.
-   *Catches dotCMS.*
-6. **Single-directory concentration** — one dir holding a dominant file share,
-   esp. named test/bench/vendor/generated.
+**Surface as a CONFIRM prompt (fuzzy — too weak to drop on, perfect to ask on):**
+5. **Lines-vs-files dominance disagreement** — line-leader ≠ file-leader ⇒ likely
+   vendored/minified inflation. *(Catches dotCMS.)* → "node looks inflated by a few
+   large files — treat as node-primary, or exclude `core-web/` bundles?"
+6. **Single-directory concentration** — one dir holding a dominant file share. →
+   "`benchmarks/` is 73% of files — assess it, or scope to `src/`?"
 
-Ranking is deliberate: 1–4 are author-declared or near-universal → **exclude**;
-5–6 are inference → **flag**.
+This is the reframe the *propose* step earns: signals too fuzzy to act on alone
+were destined to be output-stage caveats; as **prompts before measurement** they
+become precisely useful — *ask and resolve, don't flag and apologise.*
 
-## 6. Where it lives + cost
+## 7. Two operator modalities (it's never CI, but it's not always a TTY)
 
-All scan-stage classification goes in **`lib/source-inventory.sh`** (one authority
-→ detection, complexity, duplication, stats, hotspots all benefit from one change;
-in particular detection reads the cleaned inventory, closing #78 Repro B).
+- **Human at a terminal** — a blocking prompt is fine (and good): an
+  `AskUserQuestion`-style choice from the proposal. Answer, run.
+- **Agent driving headless** — agents consume *artifacts*, not TTY prompts. checkup
+  emits the proposed scope (the plan + draft `.checkup.yml`); the agent ratifies/
+  tightens (writes the config or `CHECKUP_SRC_ROOTS`) and re-invokes. It can even
+  cheaply verify (read two files) before deciding — spending its tokens on the
+  *right* scope instead of post-hoc reconstructing a drowned report (which is what
+  the blind auditors had to do on corvus/dotCMS).
+- **Hands-off** (a scheduled trend run) — `--accept` (or audit default) takes the
+  safe proposal unchanged.
 
-**Cost discipline — order cheap→expensive so the set shrinks before the only
-O(files) step:**
-1. convention/suffix excludes (string match — free),
-2. `.gitattributes` via one `git check-attr` batch (≈O(1) process),
-3. submodule paths (one file),
-4. **then** the generated-marker `head`-grep over *what remains*.
+**Reproducibility:** the confirm step's decision is captured in `.checkup.yml` /
+a scope record — so the run is repeatable, the audit re-runnable, and the agent's
+choice inspectable. The prompt yields a *durable decision*, not a keystroke.
 
-The marker pass reads only the first ~2 lines per file. It is **net-negative
-cost**: it shrinks the measured set, so every downstream engine (lizard, scc,
-jscpd) does far less work — corvus would drop from ~39k to ~2k files, *pre-empting*
-the #105 overflow/OOM rather than patching it. Still, set a ceiling: if the
-post-cheap-exclude set is still very large, cap/skip the marker pass and fall back
-to the output-stage flag (honest-degrade, never hang).
+## 8. Where it lives + cost
 
-## 7. Honesty guards (non-negotiable)
+All classification lives in **`lib/source-inventory.sh`** (the #75 chokepoint).
+**Cost-ordered cheap→expensive** so the set shrinks before the only O(files) step:
+conventions/suffixes (free) → `.gitattributes` (one `git check-attr`) → submodules
+(one file) → **then** the generated-marker head-grep over what remains. The marker
+pass reads ~3 lines/file and is **net-negative cost** — it shrinks the set every
+downstream engine processes (corvus: ~39k → ~4k), *pre-empting* #105 rather than
+patching it. Ceiling: if the post-cheap-exclude set is still huge, cap/skip the
+marker pass and fall back to the confirm-step prompt.
 
-- **Conservative:** exclude only on the high-confidence signals (§5.1–5.4). When
-  unsure, **include and flag** — never silently drop.
-- **Visible:** the coverage block (#75) reports excluded counts *by category*
-  ("excluded N generated, M vendored, K test-corpus"), and **"% of the tree that
-  is generated/vendored" is promoted as a first-class signal** — a codegen-heavy
-  project is itself a meaningful characterisation.
-- **Inspectable / overridable:** the excluded list is recorded; `.checkup.yml` /
-  `CHECKUP_EXCLUDE` (#18) can add or *force-include* paths (a forker who *wants*
-  to assess generated code can).
-- **Check-aware:** security/supply-chain checks may opt vendored back in (§3).
+**The coupling the spike exposed (§9): scc-based checks bypass the inventory.**
+`codebase-stats`, detection-dominance and tech-viability call `scc` directly with
+their own `--exclude-dir`. So excluding in the inventory alone leaves stats/identity
+on the full tree — an internal contradiction ("3,982 assessed" vs "40,822 files").
+**Phases 2 and 3 are coupled**; the real engineering is making scc honour the
+inventory (feed it the file list, or derive exclude-globs from the classification),
+which is the #78 Repro B work, now concretely scoped.
 
-## 8. Phasing (each shippable; cheap+authoritative first)
+## 9. Spike findings (the reframe is evidence-based)
 
-- **Phase 1 — author-declared signals.** `.gitattributes linguist-*` (via
-  `git check-attr`) + submodule paths → exclude from the inventory + report
-  counts. Near-zero cost, highest confidence. *Catches corvus's submodules.*
-- **Phase 2 — generated markers.** The `head`-grep pass (cost-ordered last) →
-  exclude + report. *Catches corvus's ~95% generated bulk — the headline win, and
-  pre-empts #105.*
-- **Phase 3 — detection on the cleaned inventory.** Replace detection's raw-scc
-  exclude list with the inventory's classification (or derive dominance from the
-  inventory). *Closes #78 Repro B.* Add the coverage "% generated/vendored" signal.
-- **Phase 4 — output-stage flags.** Lines-vs-files disagreement + dir
-  concentration → lower `primaryConfidence` + skew note. *Catches dotCMS.*
+A gated (`CHECKUP_EXCLUDE_GENERATED`) generated-marker exclusion in the inventory,
+run on corvus (`spike-first-party-source`):
+
+| signal | before | after |
+|---|---|---|
+| files assessed (inventory) | 39,208 | **3,982** (first-party) |
+| complexity | 6,620 "hotspots" over generated code | **1,213 over the real library** |
+| duplication | cap-skipped (39k > limit) | **runs** (60.3% — likely the `src`/`src-v4` parallel trees) |
+| lizard robustness | overflow + OOM (needed #105) | **no overflow, no cap hit** |
+| `codebase-stats` | 14M lines | **still 14M** ← scc bypasses the inventory (§8) |
+
+Learnings: (a) the seam works — inventory exclusion flows to coverage + every
+lizard-based engine; (b) the payoff is large and pre-empts #105; (c) the marker
+pass is the lever (90% hit; `.gitattributes` was 0 here); (d) **scc-based checks
+must be routed through the inventory or the report self-contradicts** — the
+genuine remaining work.
+
+## 10. Honesty guards (non-negotiable)
+
+- **Conservative:** auto-exclude only on §6.1–6.4; everything fuzzier becomes a
+  prompt, never a silent drop. When unsure, include + ask.
+- **Visible:** coverage reports excluded counts *by category*, and **"% generated/
+  vendored" is a first-class signal** (a codegen-heavy project is a real finding).
+- **Inspectable / overridable / reproducible:** the proposal and the confirmed
+  scope are recorded; `.checkup.yml` / `CHECKUP_EXCLUDE` (#18) can force-include.
+- **Check-aware:** security opts vendored back in (§5).
+
+## 11. Phasing
+
+- **Phase 1 — author-declared excludes.** `.gitattributes linguist-*` + submodules
+  → exclude in the inventory + report. Near-zero cost, highest confidence.
+- **Phase 2 — generated markers.** The head-grep pass (productionise the spike,
+  cost-ordered last). *The corvus lever; pre-empts #105.*
+- **Phase 3 — scc on the cleaned inventory.** Route stats/detection/tech-viability
+  through the inventory (the §8 coupling). *Closes #78 Repro B; removes the
+  coverage-vs-stats contradiction.* Add the "% generated/vendored" coverage signal.
+  **Phases 2 and 3 ship together** (or the report self-contradicts).
+- **Phase 4 — the PROPOSE pre-pass + CONFIRM.** `checkup --plan` emits the proposed
+  scope + draft `.checkup.yml`; the human-prompt / agent-ratify / `--accept`
+  modalities; the fuzzy signals (§6.5–6.6) as prompts. *Catches dotCMS.*
 - **Phase 5 (later) — check-awareness.** Security opts vendored back in.
 
-Phases 1–2 are the cure for the corvus class; 3 fixes identity routing; 4 is the
-fallback for the dotCMS class. Each is independently valuable and pausable.
+Phases 1–3 make the default *proposal* honest and the engines robust; Phase 4 adds
+the confirm loop that resolves what the tool can't safely decide alone.
 
-## 9. Open questions / risks
+## 12. Open questions / risks
 
-- **Over-exclusion (the dangerous direction).** A wrongly-excluded first-party
-  file is a silent false-clean. Mitigated by §7, but the marker regex needs
-  field-testing for false positives (a hand-written file that quotes "DO NOT
-  EDIT"). Anchor to the first lines + known phrasings; keep conservative.
-- **Submodules may already be excluded** by the git tier (gitlinks). *Verify*
-  before building Phase 1's submodule handling — it may only matter for fd/find.
-- **`.gitattributes` correctness** — use `git check-attr`, never a hand-rolled
-  parser (patterns, precedence, macros are subtle).
-- **Test corpora that aren't submodules** (copied-in suites) have no universal
-  tell — they fall to convention dirs + override, or stay measured + flagged.
-- **Cost ceiling on huge trees** — define the cap and the fallback (§6).
-- **Determinism** — all signals are deterministic; keep the excluded-list output
-  stable (sorted) for the #96 byte-identical gates.
-- **Interaction:** #75 (the inventory), #78 Repro B (detection), #18
-  (CHECKUP_EXCLUDE override), #105 (robustness symptoms of this root cause).
+- **Over-exclusion (the dangerous direction).** Field-test the marker regex for
+  false positives (a hand-written file quoting "DO NOT EDIT"). Anchor to the head;
+  stay conservative; the confirm step is the backstop.
+- **scc integration** — does scc take a file list cleanly, or must we derive
+  exclude-globs? This is the crux of Phase 3 (§8).
+- **`.gitattributes`** — use `git check-attr`, never a parser.
+- **Test corpora not as submodules** (copied-in) — no universal tell; fall to
+  convention dirs + the confirm prompt.
+- **Cost ceiling** on huge trees (§8) — define cap + fallback-to-prompt.
+- **Determinism** — keep the excluded-list output stable (sorted) for the #96
+  byte-identical gates; the confirmed scope is captured so EXECUTE is reproducible.
+- **Scope discipline** — CONFIRM stays "answer a question / edit a config + re-run",
+  not a wizard. The moment it needs a blocking TTY read to function, it's wrong.
+- **Interaction:** #75 (inventory), #78 Repro B (detection), #18 (override), #105
+  (robustness symptoms of this root cause).
 
-## 10. Acceptance targets (real before/after)
+## 13. Acceptance targets (real before/after)
 
-Two repos that exercise *both* failure modes and *both* tiers:
+Two repos covering both failure modes and the full spine:
 
-**corvus-jsonschema** — *measurement drowning; scan-stage curable.*
+**corvus-jsonschema** — *measurement drowning; scan-stage curable* (spike-proven §9).
 | | before | after (target) |
 |---|---|---|
-| files measured | ~39k (≈95% generated + submodules) | ~first-party only (~thousands) |
-| complexity | 6,620 "hotspots" over generated code | CCN of the *real* library |
-| lizard robustness | overflow/OOM (needed #105 cap) | well under any cap — no degrade |
-| coverage signal | none | "≈95% generated, N submodules excluded" |
+| files measured | ~39k (≈90% generated + submodules) | ~first-party (~4k) |
+| complexity | 6,620 over generated | CCN of the *real* library (~1.2k) |
+| stats / identity | 14M lines | first-party LOC (Phase 3) |
+| lizard robustness | overflow/OOM (#105) | well under any cap |
+| coverage | none | "≈90% generated, N submodules excluded" |
 
-**dotCMS** — *identity skew; output-stage flag.*
+**dotCMS** — *identity skew; resolved at CONFIRM.*
 | | before | after (target) |
 |---|---|---|
-| primary | **node (high)** — wrong | node **low confidence** + skew note |
-| skew signal | none | "node 41% by line vs ~19% by file — likely vendored/minified" |
+| primary | **node (high)** — wrong | proposal flags "node 41% by line vs ~19% by file"; operator/agent confirms Java-primary or excludes `core-web/` bundles |
 
-**Regression (must hold):** the cx-* fixtures and a clean single-package source
-repo (no generated/vendored bulk) byte-identical / unchanged; nothing first-party
-silently dropped.
+**Regression (must hold):** cx-* fixtures + a clean single-package source repo
+(no generated/vendored bulk) byte-identical / unchanged; nothing first-party
+silently dropped; the headless `--accept` path matches today's default behaviour
+until Phases 1–3 change the *proposal*.
 
-## 11. How we'll stress-test this plan
+## 14. How we'll stress-test this plan
 
-- **Adversarial review** (Morlock pass) on the exclude-vs-flag boundary and the
-  over-exclusion guards specifically — "show me a first-party file this wrongly
-  drops", "show me the cost blowing up on a huge tree", "show me a generated repo
-  with no marker/submodule/attribute that still drowns".
-- **The two real targets** are the acceptance harness — run before/after on
-  corvus + dotCMS at each phase.
-- Phase 1 is a cheap spike (two file reads) that de-risks the inventory-as-
-  classifier seam before the marker pass.
+- **Adversarial review** (Morlock pass) on: the exclude-vs-prompt boundary (§6),
+  over-exclusion guards (§10), the scc-coupling (§8), and "does CONFIRM stay
+  non-wizard / does `--accept` keep the headless path honest?".
+- **The two real targets** are the acceptance harness — before/after at each phase.
+- Phase 1 + the §9 spike already de-risked the inventory-as-classifier seam; the
+  scc seam (Phase 3) is the next thing to spike before committing.
