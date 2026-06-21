@@ -70,6 +70,20 @@ assert_eq "user glob '*/legacy/*' excluded" \
     "src/a.ts" \
     "$(CHECKUP_EXCLUDE='*/legacy/*'; filter src/a.ts src/legacy/old.ts)"
 
+# Regression (#109/#18): a DIRECTORY-path glob must exclude nested files even when
+# the caller's cwd contains files the glob matches. The exclusion runs with
+# cwd == target, so an unguarded `for g in $CHECKUP_EXCLUDE` pathname-expands
+# `a/b/*` to its literal children — which then never match a deeper path, so the
+# directory exclude silently did nothing (the dotCMS vendored-JS case). Reproduce
+# by making the glob match real files on disk; only the noglob fix keeps it literal.
+GLOBTMP=$(mktemp -d)
+mkdir -p "$GLOBTMP/a/b/c"
+: > "$GLOBTMP/a/b/c/x.js"; : > "$GLOBTMP/a/b/top.js"
+assert_eq "directory glob 'a/b/*' excludes nested file (not just direct children)" \
+    "src/keep.ts" \
+    "$(cd "$GLOBTMP"; CHECKUP_EXCLUDE='a/b/*'; filter a/b/c/x.js a/b/top.js src/keep.ts)"
+rm -rf "$GLOBTMP"
+
 echo ""
 echo "resolve_scan_roots: whole-tree default; override narrows to existing"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

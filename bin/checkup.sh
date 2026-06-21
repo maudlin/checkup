@@ -148,6 +148,8 @@ source "$CHECKUP_HOME/lib/profile.sh"
 source "$CHECKUP_HOME/lib/config.sh"
 # shellcheck source=../lib/source-inventory.sh
 source "$CHECKUP_HOME/lib/source-inventory.sh"
+# shellcheck source=../lib/scc-inventory.sh
+source "$CHECKUP_HOME/lib/scc-inventory.sh"
 # shellcheck source=../lib/detect-topology.sh
 source "$CHECKUP_HOME/lib/detect-topology.sh"
 # shellcheck source=../lib/calibrate.sh
@@ -160,6 +162,11 @@ source "$CHECKUP_HOME/lib/calibrate.sh"
 # reads from this single source of truth instead of a guessed `src server` root.
 resolve_scan_roots
 build_source_inventory
+# The scc-based engines (stats, identity, tech-viability) can't be fed a file list
+# and their dir/regex excludes can't express scattered generated/vendored files,
+# so they filter scc's --by-file output against this all-extensions keep-set
+# instead — making them honour the same first-party scope as everything else (#109).
+build_scc_keepset
 
 # Language probes, derived from the inventory so they agree exactly with what
 # gets measured. LIZARD_PROBE gates the lizard tiers; NONJS_LIZARD_PROBE gates
@@ -240,11 +247,17 @@ manifest_has() { local s; for s in "${DETECT_MANIFESTS[@]}"; do [ "$s" = "$1" ] 
 DETECT_STACKS_JSON="[]"
 SCC_OK=false
 if [ -n "$SCC_BIN" ]; then
-    DETECT_SCC_RAW=$("$SCC_BIN" --format json --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null || true)
-    if [ -n "$DETECT_SCC_RAW" ] && echo "$DETECT_SCC_RAW" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
-        SCC_OK=true
-        echo "$DETECT_SCC_RAW" > "$RAW_DIR/scc-detect.json"
-        DETECT_STACKS_JSON=$(echo "$DETECT_SCC_RAW" | jq -c -f "$CHECKUP_HOME/lib/detect-stacks.jq")
+    # One scc --by-file walk, re-aggregated against the first-party keep-set, so the
+    # identity/dominance read reflects the code the team owns — not vendored bulk
+    # (the #78 Repro B misroute). Same breakdown shape detect-stacks.jq expects.
+    ensure_scc_byfile "$SCC_BIN"
+    if [ "$SCC_BYFILE_OK" = true ]; then
+        DETECT_SCC_RAW=$(scc_breakdown "$SCC_KEEP_JSON" < "$SCC_BYFILE")
+        if echo "$DETECT_SCC_RAW" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+            SCC_OK=true
+            echo "$DETECT_SCC_RAW" > "$RAW_DIR/scc-detect.json"
+            DETECT_STACKS_JSON=$(echo "$DETECT_SCC_RAW" | jq -c -f "$CHECKUP_HOME/lib/detect-stacks.jq")
+        fi
     fi
 fi
 
@@ -1667,38 +1680,34 @@ else
     echo -e "${GREEN}✅ scc found: $($SCC_CMD --version)${NC}"
     echo ""
 
-    run_tool "Codebase Statistics" "$SCC_CMD" \
-        --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist --no-cocomo
+    # One scc --by-file walk (shared with detection/complexity), re-aggregated
+    # against the first-party keep-set — so the totals describe the code the team
+    # owns, not the whole tree (no more "14M lines" over generated bulk, #109).
+    ensure_scc_byfile "$SCC_CMD"
 
-    if [ ! -s "$LAST_RAW" ]; then
-        echo -e "${YELLOW}⚠️  scc produced no output${NC}"
-        write_failed "codebase-stats" "scc returned exit $LAST_EXIT with empty output" "$SCC_INTENT"
+    if [ "$SCC_BYFILE_OK" != true ]; then
+        echo -e "${YELLOW}⚠️  scc produced no usable output${NC}"
+        write_failed "codebase-stats" "scc returned no usable --by-file JSON" "$SCC_INTENT"
     else
-        cat "$LAST_RAW"
-        echo ""
-
-        # scc columns: Language | Files | Lines | Blanks | Comments | Code | Complexity
-        # `tr -d ,` strips thousand-separators (e.g. "1,632") that would otherwise
-        # produce invalid JSON when interpolated as numbers below.
-        TOTAL_CODE=$(grep "^Total" "$LAST_RAW" | awk '{print $6}' | tr -d ',')
-        TOTAL_FILES=$(grep "^Total" "$LAST_RAW" | awk '{print $2}' | tr -d ',')
-        COMPLEXITY=$(grep "^Total" "$LAST_RAW" | awk '{print $7}' | tr -d ',')
-
-        # Top languages by code, derived from scc's JSON rather than hardcoded to
-        # TypeScript/Svelte — so the breakdown is meaningful on ANY stack (a
-        # legacy ASP/C# audit, a Go service, etc.). The text table above is for
-        # the console; JSON is robust to language names with spaces / truncation.
-        SCC_TOP_LANGS=$("$SCC_CMD" --format json \
-            --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null \
-            | jq -r 'sort_by(-.Code) | .[0:3] | map("\(.Name) \(.Code)") | join(", ")' 2>/dev/null)
+        STATS_BREAKDOWN=$(scc_breakdown "$SCC_KEEP_JSON" < "$SCC_BYFILE")
+        # "FILES CODE COMPLEXITY", reconstructed from the breakdown (faithful Σ).
+        read -r TOTAL_FILES TOTAL_CODE COMPLEXITY <<< "$(scc_breakdown_total "$STATS_BREAKDOWN")"
+        SCC_TOP_LANGS=$(scc_breakdown_toplangs "$STATS_BREAKDOWN" 3)
         [ -z "$SCC_TOP_LANGS" ] && SCC_TOP_LANGS="n/a"
 
-        echo -e "${BLUE}📈 Summary:${NC} ${TOTAL_CODE:-0} lines of code across ${TOTAL_FILES:-0} files"
+        # Console table from the first-party breakdown (replaces scc's whole-tree
+        # tabular output, which would contradict the first-party totals).
+        printf "%-24s %8s %12s %12s\n" "Language" "Files" "Code" "Complexity"
+        echo "------------------------------------------------------------"
+        echo "$STATS_BREAKDOWN" | jq -r '.[] | [.Name, .Count, .Code, .Complexity] | @tsv' \
+            | awk -F'\t' '{ printf "%-24s %8s %12s %12s\n", $1, $2, $3, $4 }'
+        echo ""
+        echo -e "${BLUE}📈 Summary:${NC} ${TOTAL_CODE:-0} lines of code across ${TOTAL_FILES:-0} files (first-party)"
         echo -e "   Top: ${SCC_TOP_LANGS} | Complexity: ${COMPLEXITY:-0}"
 
         # Standardised parsed JSON for the tool-agnostic markdown writer.
         write_parsed "codebase-stats" "pass" "${TOTAL_FILES:-0}" \
-            "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files (top: ${SCC_TOP_LANGS})" \
+            "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files, first-party (top: ${SCC_TOP_LANGS})" \
             '[]' \
             "$SCC_INTENT"
     fi
@@ -2071,26 +2080,16 @@ elif [ "$DETECT_CPLX_ARM" = "scc" ]; then
         fail_means: "Files high on the heuristic are bug-incubators / refactor candidates — confirm with a language-aware tool. Reported as warn (heuristic, not a hard gate)."
     }')
 
-    run_tool "Complexity (scc)" "$CPLX_SCC" "${CPLX_ROOTS[@]}" \
-        --by-file --format json --no-cocomo \
-        --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist
+    # Shared scc --by-file walk, ranked over the first-party keep-set only — so
+    # generated/vendored files can't masquerade as the worst hotspots (#109). The
+    # ranking carries a total order (-ccn, then file) for byte-identical runs (#96).
+    ensure_scc_byfile "$CPLX_SCC"
 
-    if ! is_valid_json "$LAST_RAW"; then
-        echo -e "${YELLOW}⚠️  scc produced unparseable JSON (exit $LAST_EXIT)${NC}"
-        write_failed "complexity" "scc produced unparseable JSON (exit $LAST_EXIT)" "$SCC_CPLX_INTENT"
+    if [ "$SCC_BYFILE_OK" != true ]; then
+        echo -e "${YELLOW}⚠️  scc produced unparseable JSON${NC}"
+        write_failed "complexity" "scc produced no usable --by-file JSON" "$SCC_CPLX_INTENT"
     else
-        # Flatten per-file entries; rank by scc complexity. Severity bands are
-        # heuristic (scc complexity ≈ decision-keyword count), documented as such.
-        CPLX_FINDINGS=$(jq '
-            [ .[].Files[]?
-              | select((.Complexity // 0) > 0)
-              | { file: (.Location | sub("^\\./"; "")), line: 1, ccn: .Complexity, lines: .Lines,
-                  code: ("complexity-" + (.Complexity | tostring)),
-                  severity: (if .Complexity >= 100 then "high" elif .Complexity >= 50 then "warning" elif .Complexity >= 25 then "low" else "info" end),
-                  message: ((.Location | sub(".*/"; "")) + " — scc complexity " + (.Complexity | tostring) + " (" + (.Lines | tostring) + " lines)") }
-            ]
-            | sort_by(-.ccn)
-        ' "$LAST_RAW")
+        CPLX_FINDINGS=$(scc_perfile_findings "$SCC_KEEP_JSON" < "$SCC_BYFILE")
 
         mkdir -p "$OUT_DIR"
         : > "$OUT_DIR/complexity-full.csv"
@@ -3376,7 +3375,14 @@ if [ -z "$TV_SCC" ]; then
     echo -e "${BLUE}ℹ️  Skipped — scc not installed (needed for the language breakdown)${NC}"
     write_skipped "tech-viability" "scc not installed — cannot read the language breakdown" "$TV_INTENT"
 else
-    TV_JSON=$("$TV_SCC" --format json --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist 2>/dev/null)
+    # The viability read keys off language identity — over the first-party set, so
+    # a vendored Flash/ASP blob doesn't ring (or mute) the bell on its own (#109).
+    ensure_scc_byfile "$TV_SCC"
+    if [ "$SCC_BYFILE_OK" = true ]; then
+        TV_JSON=$(scc_breakdown "$SCC_KEEP_JSON" < "$SCC_BYFILE")
+    else
+        TV_JSON=""
+    fi
     if [ -z "$TV_JSON" ] || ! echo "$TV_JSON" | jq -e 'type=="array"' >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠️  scc produced no parseable language data${NC}"
         write_failed "tech-viability" "scc produced no parseable JSON (exit $?) — invocation error, not a clean result" "$TV_INTENT"

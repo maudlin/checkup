@@ -50,10 +50,22 @@ _inventory_excluded() {
     esac
     # File-suffix excludes (committed minified/generated/snapshot files).
     case "$p" in *.min.js|*.min.css|*.bundle.js|*.snap) return 0 ;; esac
-    for g in ${CHECKUP_EXCLUDE:-}; do
-        # shellcheck disable=SC2254  # $g is an intentional glob pattern
-        case "$p" in $g) return 0 ;; esac
-    done
+    if [ -n "${CHECKUP_EXCLUDE:-}" ]; then
+        # Split CHECKUP_EXCLUDE into globs WITH pathname expansion disabled: the
+        # caller's cwd is the scan target, so an unguarded `for g in $CHECKUP_EXCLUDE`
+        # would glob a directory pattern like `vendor/js/*` against the filesystem
+        # (expanding it to its literal children, which then never match a nested
+        # path) — the reason directory excludes silently did nothing (#109/#18).
+        # `set -f` stops that; the `case` pattern below is matched as a glob anyway.
+        local g _had_noglob; case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+        set -f
+        # shellcheck disable=SC2086  # intentional word-split into glob patterns
+        for g in $CHECKUP_EXCLUDE; do
+            # shellcheck disable=SC2254  # $g is an intentional glob pattern
+            case "$p" in $g) [ "$_had_noglob" = 0 ] && set +f; return 0 ;; esac
+        done
+        [ "$_had_noglob" = 0 ] && set +f
+    fi
     return 1
 }
 
@@ -108,6 +120,43 @@ build_source_inventory() {
     [ -n "${CHECKUP_SRC_ROOTS:-}" ] && SOURCE_SCOPE="override:$SOURCE_SCOPE"
     SOURCE_LST="$lst"
     SOURCE_FILE_COUNT=$(tr -cd '\0' < "$lst" | wc -c | tr -d ' ')
+}
+
+# Like _filter_inventory, but WITHOUT the source-extension allow-list — only the
+# provenance/convention/CHECKUP_EXCLUDE exclusion. This is the keep-set for the
+# scc-based engines (stats/identity/tech-viability), which count ALL languages —
+# first-party JSON/Markdown/config too, not just the SOURCE_EXT_RE slice that
+# lizard/ESLint measure per-function. Same normalisation + exclusion as the source
+# filter, so the two share one namespace and one notion of "excluded".
+_filter_keep() {
+    local p
+    while IFS= read -r -d '' p; do
+        p="${p#./}"
+        _inventory_excluded "$p" && continue
+        printf '%s\0' "$p"
+    done
+}
+
+# Build the scc keep-set: VCS-tracked files (ALL extensions) minus the exclusions,
+# as a JSON array at $RAW_DIR/scc-keep.json (sets SCC_KEEP_JSON). The scc-based
+# engines filter their --by-file output against this (lib/scc-inventory.sh), so
+# stats/identity reflect first-party code, not the whole tree (#109). Same tiers
+# as build_source_inventory; run AFTER resolve_scan_roots, cwd == TARGET.
+build_scc_keepset() {
+    local lst="$RAW_DIR/scc-keep.lst"
+    SCC_KEEP_JSON="$RAW_DIR/scc-keep.json"
+    mkdir -p "$RAW_DIR"
+    if [ "${GIT_OK:-false}" = true ]; then
+        git ls-files -z -- "${SCAN_ROOTS[@]}" 2>/dev/null | _filter_keep > "$lst"
+    elif command -v fd > /dev/null 2>&1; then
+        fd --type f --hidden --no-follow --print0 . "${SCAN_ROOTS[@]}" 2>/dev/null | _filter_keep > "$lst"
+    else
+        find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .git \) -prune -o \
+            -type f -print0 2>/dev/null | _filter_keep > "$lst"
+    fi
+    jq -Rs 'split("\u0000") | map(select(length > 0))' < "$lst" > "$SCC_KEEP_JSON" 2>/dev/null \
+        || printf '[]' > "$SCC_KEEP_JSON"
+    return 0
 }
 
 # Emit (NUL-delimited) the inventory paths whose extension matches $1 (an ERE

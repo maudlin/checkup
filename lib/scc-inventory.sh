@@ -26,6 +26,32 @@
 # The pure transform is lib/scc-aggregate.jq (env-independent, unit-tested in
 # test/scc-inventory.test.sh). These wrappers stay thin on purpose.
 
+# ensure_scc_byfile <scc_bin>
+#   Run scc --by-file ONCE over the scan roots, caching to $RAW_DIR/scc-byfile.json
+#   so every scc-based engine shares a single walk (then filters to the keep-set).
+#   Idempotent (guarded by SCC_BYFILE_DONE). Sets SCC_BYFILE (path) and
+#   SCC_BYFILE_OK (true|false). Never aborts under set -e — callers branch on
+#   SCC_BYFILE_OK and route an unusable result to their existing skip/fail path.
+#   The --exclude-dir is kept only as a cheap pre-filter (those dirs are excluded
+#   by the keep-set anyway); the keep-set is the real authority. scc respects
+#   .gitignore itself, and --by-file streams per-file counts (memory-safe — unlike
+#   lizard duplication, #105), so this is safe on very large trees.
+ensure_scc_byfile() {
+    local scc="$1"
+    [ "${SCC_BYFILE_DONE:-}" = true ] && return 0
+    SCC_BYFILE_DONE=true
+    SCC_BYFILE="$RAW_DIR/scc-byfile.json"
+    SCC_BYFILE_OK=false
+    [ -n "$scc" ] || return 0
+    "$scc" --by-file --format json --no-cocomo \
+        --exclude-dir=node_modules,.svelte-kit,coverage,.prisma,build,dist \
+        "${SCAN_ROOTS[@]}" > "$SCC_BYFILE" 2>/dev/null || true
+    if is_valid_json "$SCC_BYFILE" && jq -e 'type=="array"' "$SCC_BYFILE" >/dev/null 2>&1; then
+        SCC_BYFILE_OK=true
+    fi
+    return 0
+}
+
 # scc_breakdown <keepfile>
 #   stdin:  scc --by-file --format json
 #   stdout: [ {Name, Code, Count, Complexity, Lines} ]  (Code desc, Name asc),
