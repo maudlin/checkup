@@ -70,6 +70,28 @@ set +e
 assert_eq "LAST_EXIT == 127 when tool absent" "127" "$LAST_EXIT"
 
 echo ""
+echo "run_tool_filelist — feeds a NUL list via xargs (argv-overflow safe)"
+# Plumbing test: build a NUL-delimited list of files and a tool that echoes each
+# path it's given; assert run_tool_filelist invokes the tool over the whole list
+# and concatenates output into LAST_RAW, with the LAST_* contract intact. The
+# ARG_MAX-safety itself is xargs' job (its raison d'être); here we prove the
+# wiring + that a many-entry list is fully covered.
+FL_DIR="$TMP/fl"; mkdir -p "$FL_DIR"
+FL_LIST="$TMP/fl.lst"; : > "$FL_LIST"
+for i in $(seq 1 250); do printf '%s/file_%03d.txt\0' "$FL_DIR" "$i" >> "$FL_LIST"; done
+set -e   # prove it doesn't abort under set -e
+run_tool_filelist "Filelist Echo" "$FL_LIST" printf '%s\n' >/dev/null
+set +e
+assert_eq "LAST_EXIT == 0"                 "0"     "$LAST_EXIT"
+assert_eq "every list entry processed"     "250"   "$(wc -l < "$LAST_RAW" | tr -d ' ')"
+assert_eq "first path echoed"              "$FL_DIR/file_001.txt" "$(head -1 "$LAST_RAW")"
+echo "run_tool_filelist — missing tool → graceful 127 (no abort)"
+set -e
+run_tool_filelist "Filelist Missing" "$FL_LIST" nonexistent_tool_xyz_$$ >/dev/null
+set +e
+assert_eq "LAST_EXIT == 127 when tool absent" "127" "$LAST_EXIT"
+
+echo ""
 echo 'run_tool — `npm run <missing-script>` is promoted to LAST_EXIT=127'
 # Fake an `npm` binary that mimics the real npm's missing-script error.
 # Without the promotion, sections parse an empty stdout and misclassify

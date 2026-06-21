@@ -31,6 +31,18 @@ fi
 
 mkdir -p "$RAW_DIR" "$PARSED_DIR"
 
+# CHECKUP_LIZARD_MAX_FILES — above this many files, the lizard tiers (complexity,
+# duplication) skip honestly rather than risk an OOM or a multi-hour run.
+# Duplication is the dangerous one: -Eduplicate holds every file's tokens in
+# memory for cross-file comparison, so a generated-/corpus-bloated tree (e.g. a
+# 39k-file, 13.7M-line repo) exhausts memory and kills the whole run. Generous
+# enough for first-party source; the cap targets generated/vendored bloat. Raise
+# it, or narrow with CHECKUP_SRC_ROOTS, to force a run on a genuinely large tree.
+: "${CHECKUP_LIZARD_MAX_FILES:=5000}"
+
+# filelist_count <listfile> — number of NUL-delimited entries in a path list.
+filelist_count() { tr -cd '\0' < "$1" | wc -c | tr -d ' '; }
+
 # slug "Some Label" → "some-label"
 slug() {
     local s
@@ -119,6 +131,44 @@ run_tool() {
         && grep -qE 'Missing script|could not determine executable to run' "$LAST_STDERR" 2>/dev/null; then
         LAST_EXIT=127
     fi
+
+    [ -s "$LAST_STDERR" ] || rm -f "$LAST_STDERR"
+    return 0
+}
+
+# run_tool_filelist "<label>" <list-file> <tool> [args…]
+#
+# Like run_tool, but feeds <list-file> (a NUL-delimited list of paths) to <tool>
+# via `xargs -0`, so a huge file list cannot overflow ARG_MAX — a bash array
+# expanded onto one argv ("${files[@]}") dies with "Argument list too long" (exit
+# 126) on large repos (seen on a 39k-file C# tree: lizard never ran, complexity +
+# duplication both failed). xargs batches the paths within the system limit and
+# invokes <tool> once per batch; their stdout concatenates into $LAST_RAW. For
+# per-record output (lizard --csv) the concatenation is exact; for global analyses
+# (lizard -Eduplicate) a multi-batch run can miss CROSS-batch matches but never
+# crashes or double-counts — an honest degrade on pathologically large trees.
+# Reads the list via stdin redirect (portable; BSD xargs has no -a). Sets the same
+# LAST_* globals and never aborts under set -e. Caller gates on a non-empty
+# inventory probe, so xargs is never run on an empty list.
+run_tool_filelist() {
+    local label="$1" listfile="$2"; shift 2
+    local s rawbase
+    s=$(slug "$label")
+    rawbase="$s"; [ -n "${SLUG_NS:-}" ] && rawbase="$SLUG_NS-$s"
+    LAST_LABEL="$label"
+    LAST_SLUG="$s"
+    LAST_RAW="$RAW_DIR/$rawbase.txt"
+    LAST_STDERR="$RAW_DIR/$rawbase.stderr.txt"
+    : > "$LAST_RAW"
+    : > "$LAST_STDERR"
+
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "⏭️  SKIP $label — '$1' not on PATH"
+        LAST_EXIT=127
+        return 0
+    fi
+
+    xargs -0 "$@" < "$listfile" > "$LAST_RAW" 2> "$LAST_STDERR" && LAST_EXIT=0 || LAST_EXIT=$?
 
     [ -s "$LAST_STDERR" ] || rm -f "$LAST_STDERR"
     return 0

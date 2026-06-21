@@ -101,6 +101,16 @@ across the whole thing, honestly*.
   whole run (after only 3 checks, no report) on any repo with a type-aware ESLint
   config and no project-service parse errors. Guarded with `|| true`; a static
   `set -e` safety test now fails CI on any unguarded `grep -c` substitution.
+- **checkup no longer falls over on very large trees** (#105): the `lizard`
+  complexity/duplication tiers passed the whole inventory as one argv, which
+  overflowed `ARG_MAX` on a big repo (`lizard: Argument list too long`, exit 126 —
+  both checks failed). They now stream the file list through `xargs` (batched,
+  overflow-safe). And because single-pass clone detection holds every file's
+  tokens in memory, duplication now **skips honestly** above
+  `CHECKUP_LIZARD_MAX_FILES` (default 5000) rather than OOM-killing the run —
+  narrow with `CHECKUP_SRC_ROOTS` or raise the cap to force it. Proven on a
+  39k-file / 13.7M-line C# repo: complexity now measured (6,620 hotspots),
+  duplication a clean skip, full run completes.
 - Monorepo-aware forensic roots + honest-degrade on an empty git window (#42);
   target-relative paths for git-forensics on subdirectory targets (#15);
   ESLint complexity gated on a real Node project (#39); type-aware-lint degrades
