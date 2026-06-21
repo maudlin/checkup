@@ -826,7 +826,7 @@ TYPE_WARNING_COUNT=${TYPE_WARNING_COUNT:-0}
 # we tally them separately, strip them from top[], and degrade to skip if they
 # are the *only* output.
 TAL_INFRA_RE='[Pp]arsing error:.*(project service|TSConfig does not include|parserOptions.project|allowDefaultProject)'
-TAL_INFRA_COUNT=$(grep -cE "$TAL_INFRA_RE" "$LAST_RAW")
+TAL_INFRA_COUNT=$(grep -cE "$TAL_INFRA_RE" "$LAST_RAW" || true)   # grep -c exits 1 on zero matches → would abort under set -e
 TAL_INFRA_COUNT=${TAL_INFRA_COUNT:-0}
 
 # Same ESLint output shape — reuse the awk parser (skipping infra parse errors)
@@ -1049,7 +1049,7 @@ echo ""
 AUDIT_INTENT=$(jq -n '{
     purpose:    "Scan installed npm dependencies against the GitHub Advisory Database.",
     pass_means: "Zero high/critical advisories. Low/moderate are tolerated as ecosystem noise.",
-    fail_means: "Any critical advisory; high = warn. Run `npm audit fix` for auto-resolvable cases."
+    fail_means: "A runtime- or transitive-tree critical is a fail; high = warn. Findings are tagged by provenance (runtime / transitive / dev) and the report leads with runtime risk — a critical in a direct devDependency is down-weighted (build-time tooling, not shipped) and reads as warn. Run `npm audit fix` for auto-resolvable cases."
 }')
 
 run_profiled AUDIT "Security Vulnerabilities"
@@ -1081,32 +1081,42 @@ else
     LOW_COUNT=$(jq '.metadata.vulnerabilities.low // 0' "$LAST_RAW")
     TOTAL=$((CRIT_COUNT + HIGH_COUNT + MOD_COUNT + LOW_COUNT))
 
-    # Top 10 advisories — one entry per affected package, severity-mapped.
-    # npm audit's `vulnerabilities` is a map keyed by package; we walk it
-    # and take the highest-severity entry per package.
-    AUDIT_TOP=$(jq -c '
-        [.vulnerabilities // {} | to_entries[]
-            | {
-                file: "package.json",
-                line: 1,
-                code: (.value.name + "@" + (.value.range // "?")),
-                severity: ({"critical":"critical","high":"high","moderate":"medium","low":"low","info":"info"}[.value.severity] // "warning"),
-                message: (.value.name + " — " + .value.severity + " (" + ((.value.via | map(if type == "string" then . else (.title // "") end) | join(", "))[0:160]) + ")")
-            }
-        ]
-        | sort_by(({"critical":0,"high":1,"medium":2,"low":3}[.severity] // 4), .code)
-        | .[0:10]
-    ' "$LAST_RAW")
+    # Provenance calibration (#100, §B): tag each advisory runtime / transitive /
+    # dev (direct devDependency) using npm's isDirect + a package.json cross-ref,
+    # lead with runtime, and down-weight only a critical we can PROVE is a direct
+    # devDependency (build-time tooling, not shipped). Transitive stays at face
+    # value (isDirect=false ≠ dev). cwd is the target (or sub-package under #78
+    # recovery), so package.json is the right manifest. lib/audit-provenance.jq is
+    # the single source of truth, shared with the tests.
+    AUDIT_DEPS=$(jq -c '(.dependencies // {}) | keys' package.json 2>/dev/null || echo '[]')
+    AUDIT_DEVDEPS=$(jq -c '(.devDependencies // {}) | keys' package.json 2>/dev/null || echo '[]')
+    AUDIT_CLASSIFIED=$(jq -c --argjson deps "$AUDIT_DEPS" --argjson dev "$AUDIT_DEVDEPS" \
+        -f "$CHECKUP_HOME/lib/audit-provenance.jq" "$LAST_RAW")
+    AUDIT_TOP=$(printf '%s' "$AUDIT_CLASSIFIED" | jq -c '.top')
+    CRIT_NONDEV=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.crit_nondev')
+    CRIT_DEV=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.crit_dev')
+    RUNTIME_CRIT=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.runtime_crit')
+    TRANSITIVE_CRIT=$(printf '%s' "$AUDIT_CLASSIFIED" | jq '.transitive_crit')
 
-    if [ "$CRIT_COUNT" -gt 0 ]; then
-        echo -e "${RED}🚨 $CRIT_COUNT critical, $HIGH_COUNT high vulnerabilities (0/10)${NC}"
+    # Provenance-aware split appended to the summary so the headline leads with
+    # runtime risk, not raw totals.
+    CRIT_SPLIT=""
+    [ "$CRIT_COUNT" -gt 0 ] && CRIT_SPLIT=" ($RUNTIME_CRIT runtime, $TRANSITIVE_CRIT transitive, $CRIT_DEV dev-only)"
+
+    if [ "$CRIT_NONDEV" -gt 0 ]; then
+        # A runtime- or transitive-tree critical is a real fail.
+        echo -e "${RED}🚨 $CRIT_COUNT critical$CRIT_SPLIT, $HIGH_COUNT high vulnerabilities (0/10)${NC}"
         AUDIT_STATUS="fail"
-        AUDIT_SUMMARY="$CRIT_COUNT critical, $HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
-    elif [ "$HIGH_COUNT" -gt 0 ]; then
-        echo -e "${YELLOW}⚠️  $HIGH_COUNT high-severity vulnerabilities (5/10)${NC}"
+        AUDIT_SUMMARY="$CRIT_COUNT critical$CRIT_SPLIT, $HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
+    elif [ "$HIGH_COUNT" -gt 0 ] || [ "$CRIT_DEV" -gt 0 ]; then
+        # Only dev-direct criticals and/or highs → warn (build-time criticals are
+        # not a production breach; highs are warn as before).
+        WARN_NOTE="$HIGH_COUNT high"
+        [ "$CRIT_DEV" -gt 0 ] && WARN_NOTE="$CRIT_DEV dev-only critical (build-time), $HIGH_COUNT high"
+        echo -e "${YELLOW}⚠️  $WARN_NOTE vulnerabilities (5/10)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 5))
         AUDIT_STATUS="warn"
-        AUDIT_SUMMARY="$HIGH_COUNT high, $MOD_COUNT moderate, $LOW_COUNT low"
+        AUDIT_SUMMARY="$WARN_NOTE, $MOD_COUNT moderate, $LOW_COUNT low"
     else
         echo -e "${GREEN}✅ No high/critical vulnerabilities (10/10)${NC}"
         HEALTH_SCORE=$((HEALTH_SCORE + 10))
@@ -1362,8 +1372,20 @@ elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     # .gitignore, so scanning a root would ingest generated/vendored files. This
     # branch is gated on LIZARD_PROBE, derived from the same inventory, so the
     # list is non-empty.
-    mapfile -d '' DUP_FILES < <(inventory_paths "$INV_LIZARD_RE")
-    run_tool "Code Duplication (lizard)" "$LIZARD_BIN" -Eduplicate "${DUP_FILES[@]}"
+    # Feed the file list via a temp file + xargs (run_tool_filelist), not a bash
+    # array on argv — a large tree overflows ARG_MAX otherwise (exit 126).
+    DUP_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$DUP_LIST"
+    DUP_N=$(filelist_count "$DUP_LIST")
+    if [ "$DUP_N" -gt "$CHECKUP_LIZARD_MAX_FILES" ]; then
+        # Single-pass clone detection holds every file's tokens in memory; on a
+        # huge (often generated/corpus-bloated) tree it OOMs and kills the run.
+        # Skip honestly rather than fall over — never a false "0% → clean".
+        rm -f "$DUP_LIST"
+        echo -e "${BLUE}ℹ️  Skipped — $DUP_N files exceeds the lizard single-pass limit ($CHECKUP_LIZARD_MAX_FILES)${NC}"
+        write_skipped "duplication" "lizard duplication skipped — $DUP_N files exceeds the single-pass limit ($CHECKUP_LIZARD_MAX_FILES); clone detection holds all tokens in memory. Narrow with CHECKUP_SRC_ROOTS or raise CHECKUP_LIZARD_MAX_FILES." "$DUP_INTENT"
+    else
+    run_tool_filelist "Code Duplication (lizard)" "$DUP_LIST" "$LIZARD_BIN" -Eduplicate
+    rm -f "$DUP_LIST"
     # lizard always prints the "Duplicates" banner once it has analysed files;
     # its absence means the invocation itself failed (bad flag, no readable
     # source) — which must NOT be read as "0% → clean pass".
@@ -1430,6 +1452,7 @@ PY
         fi
         write_parsed "duplication" "$DUP_STATUS" "$DUP_COUNT" "${DUP_RATE}% duplicate token rate across $DUP_COUNT clone block(s) (lizard; Classic ASP not tokenised)" "$DUP_TOP" "$DUP_INTENT"
     fi
+    fi   # end CHECKUP_LIZARD_MAX_FILES cap guard
 else
     echo -e "${BLUE}ℹ️  Skipped — $DUP_REASON${NC}"
     write_skipped "duplication" "$DUP_REASON" "$DUP_INTENT"
@@ -1854,8 +1877,10 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
     # lizard never ingests gitignored/generated files.
     LIZARD_FINDINGS='[]'; LIZARD_RAN=false
     if [ "$RUN_LIZARD_SLICE" = true ]; then
-        mapfile -d '' NONJS_FILES < <(inventory_paths "$INV_NONJS_RE")
-        run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${NONJS_FILES[@]}"
+        # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
+        NONJS_LIST=$(mktemp); inventory_paths "$INV_NONJS_RE" > "$NONJS_LIST"
+        run_tool_filelist "Complexity (lizard)" "$NONJS_LIST" "$CPLX_LIZARD" --csv --CCN 9999
+        rm -f "$NONJS_LIST"
         if [ ! -s "$LAST_RAW" ]; then
             echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT)${NC}"
         else
@@ -1965,8 +1990,10 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
     # the canonical lizard CSV (col 2 = CCN, col 7 = file) git-hotspots consumes.
     # Fed the VCS-tracked file list (#75) — lizard doesn't honour .gitignore.
     # Gated on LIZARD_PROBE (same inventory), so the list is non-empty.
-    mapfile -d '' CPLX_LIZARD_FILES < <(inventory_paths "$INV_LIZARD_RE")
-    run_tool "Complexity (lizard)" "$CPLX_LIZARD" --csv --CCN 9999 "${CPLX_LIZARD_FILES[@]}"
+    # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
+    CPLX_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$CPLX_LIST"
+    run_tool_filelist "Complexity (lizard)" "$CPLX_LIST" "$CPLX_LIZARD" --csv --CCN 9999
+    rm -f "$CPLX_LIST"
 
     # lizard --csv is CSV, not JSON — validate by content, not is_valid_json. The
     # extension probe already confirmed lizard-parseable source exists, so empty

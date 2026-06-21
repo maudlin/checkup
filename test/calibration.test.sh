@@ -44,5 +44,32 @@ assert "substring 'republic' not a prefix"  false 'republican_secret=zzz'
 assert "PUBLICITY (not PUBLIC_)"      false 'PUBLICITY_TOKEN=zzz'
 
 echo ""
+echo "npm-audit provenance (lib/audit-provenance.jq) — runtime/transitive/dev"
+AUDIT_JQ="$CHECKUP_HOME/lib/audit-provenance.jq"
+# A realistic mix: a transitive critical (prod-reachable), a direct-runtime high,
+# a direct-dev critical (build-time tooling), a direct-runtime critical.
+AUDIT_DOC='{"vulnerabilities":{
+  "handlebars":{"name":"handlebars","severity":"critical","isDirect":false,"via":[{"title":"AST injection"}],"range":"<4.7.7"},
+  "express":{"name":"express","severity":"high","isDirect":true,"via":[{"title":"redos"}],"range":"<4.19"},
+  "concurrently":{"name":"concurrently","severity":"critical","isDirect":true,"via":[{"title":"shell-quote"}],"range":"<6"},
+  "jspdf":{"name":"jspdf","severity":"critical","isDirect":true,"via":[{"title":"ReDoS"}],"range":"<3"}
+}}'
+CL=$(printf '%s' "$AUDIT_DOC" | jq -c --argjson deps '["express","jspdf"]' --argjson dev '["concurrently"]' -f "$AUDIT_JQ")
+
+a_field() { printf '%s' "$CL" | jq -r "$1"; }
+assert_eqc() { [ "$3" = "$2" ] && ok "$1" || notok "$1 (expected '$2', got '$3')"; }
+
+assert_eqc "transitive critical counts toward fail (crit_nondev)" "2" "$(a_field '.crit_nondev')"   # handlebars + jspdf
+assert_eqc "dev critical excluded from fail (crit_dev)"           "1" "$(a_field '.crit_dev')"       # concurrently
+assert_eqc "runtime_crit counts direct prod criticals"           "1" "$(a_field '.runtime_crit')"   # jspdf
+assert_eqc "transitive_crit counts transitive criticals"         "1" "$(a_field '.transitive_crit')" # handlebars
+# A real critical (runtime/transitive) tops the list; the dev critical is down-weighted to high and demoted.
+assert_eqc "top finding is a real critical (not the dev one)" "critical" "$(a_field '.top[0].severity')"
+assert_eqc "dev critical is down-weighted to high"           "high"     "$(a_field '.top[] | select(.name=="concurrently") | .severity')"
+assert_eqc "dev finding is annotated build-time"             "true"     "$(a_field '[.top[] | select(.name=="concurrently") | .message | test("build-time only")] | any')"
+assert_eqc "no runtime/transitive critical → not in crit_nondev when only dev" \
+           "0" "$(printf '%s' '{"vulnerabilities":{"c":{"name":"c","severity":"critical","isDirect":true}}}' | jq -c --argjson deps '[]' --argjson dev '["c"]' -f "$AUDIT_JQ" | jq -r '.crit_nondev')"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

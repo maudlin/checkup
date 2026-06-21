@@ -64,6 +64,12 @@ across the whole thing, honestly*.
 
 ### Fixed
 
+- **npm-audit leads with runtime risk** (#100): advisories are tagged by
+  provenance (runtime / transitive / dev) via npm's `isDirect` + a `package.json`
+  cross-ref; the summary shows the critical split and the top list leads with real
+  (runtime/transitive) criticals. A critical in a **direct devDependency**
+  (build-time tooling, not shipped) is down-weighted to high and flips the check to
+  `warn` — never a `fail` headline on its own; transitive vulns stay at face value.
 - **Secret scan is calibrated, not just alarmist** (#100): a public-by-design
   credential — a client-shipped web key (`VITE_`/`NEXT_PUBLIC_`/`REACT_APP_`/… or
   a Firebase web API key) — is recalibrated from a 🔴 critical "breach" to a
@@ -90,6 +96,21 @@ across the whole thing, honestly*.
   with a resolvable tree (an npm lockfile), else skips; `duplication` skips on a
   missing `quality:duplicates` script instead of a false fail (the #80 pattern in
   a path it hadn't reached).
+- **Full run no longer aborts mid-way under `set -e`** (#103): an unguarded
+  `grep -c` in the type-aware-lint section exited 1 on zero matches and killed the
+  whole run (after only 3 checks, no report) on any repo with a type-aware ESLint
+  config and no project-service parse errors. Guarded with `|| true`; a static
+  `set -e` safety test now fails CI on any unguarded `grep -c` substitution.
+- **checkup no longer falls over on very large trees** (#105): the `lizard`
+  complexity/duplication tiers passed the whole inventory as one argv, which
+  overflowed `ARG_MAX` on a big repo (`lizard: Argument list too long`, exit 126 —
+  both checks failed). They now stream the file list through `xargs` (batched,
+  overflow-safe). And because single-pass clone detection holds every file's
+  tokens in memory, duplication now **skips honestly** above
+  `CHECKUP_LIZARD_MAX_FILES` (default 5000) rather than OOM-killing the run —
+  narrow with `CHECKUP_SRC_ROOTS` or raise the cap to force it. Proven on a
+  39k-file / 13.7M-line C# repo: complexity now measured (6,620 hotspots),
+  duplication a clean skip, full run completes.
 - Monorepo-aware forensic roots + honest-degrade on an empty git window (#42);
   target-relative paths for git-forensics on subdirectory targets (#15);
   ESLint complexity gated on a real Node project (#39); type-aware-lint degrades
