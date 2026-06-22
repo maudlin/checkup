@@ -13,6 +13,17 @@ across the whole thing, honestly*.
 
 ### Added
 
+- **First-party source — the scc-based engines honour the inventory** (#109,
+  plan 0002 Phase 1; closes #18): `codebase-stats`, stack-identity, the scc
+  complexity arm and tech-viability now filter + re-aggregate a single
+  `scc --by-file` walk against the first-party keep-set instead of measuring the
+  whole tree, so committed generated/vendored code no longer drowns the LOC
+  totals or skews the detected stack. A new top-level **`.checkup.yml exclude:`**
+  key and the `CHECKUP_EXCLUDE` env var now reach **every** engine (cross-scanner
+  exclusion, #18), and paths the author marked `linguist-generated`/`-vendored`
+  in **`.gitattributes`** are dropped automatically. Re-aggregation is faithful
+  and deterministic (byte-identical runs, #96); a latent `CHECKUP_EXCLUDE` bug
+  (directory globs silently no-op'd via shell pathname expansion) is fixed.
 - **Health-localiser reframe (ADR-0009):** `CHECKUP_MODE` (`tailored` | `audit`,
   never a gate); a humble **pillar-derived health triage** headline; **headline
   macro-alarms** (dead platform, no tests, leaked secret) floated to the top; an

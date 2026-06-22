@@ -70,6 +70,20 @@ assert_eq "user glob '*/legacy/*' excluded" \
     "src/a.ts" \
     "$(CHECKUP_EXCLUDE='*/legacy/*'; filter src/a.ts src/legacy/old.ts)"
 
+# Regression (#109/#18): a DIRECTORY-path glob must exclude nested files even when
+# the caller's cwd contains files the glob matches. The exclusion runs with
+# cwd == target, so an unguarded `for g in $CHECKUP_EXCLUDE` pathname-expands
+# `a/b/*` to its literal children — which then never match a deeper path, so the
+# directory exclude silently did nothing (the dotCMS vendored-JS case). Reproduce
+# by making the glob match real files on disk; only the noglob fix keeps it literal.
+GLOBTMP=$(mktemp -d)
+mkdir -p "$GLOBTMP/a/b/c"
+: > "$GLOBTMP/a/b/c/x.js"; : > "$GLOBTMP/a/b/top.js"
+assert_eq "directory glob 'a/b/*' excludes nested file (not just direct children)" \
+    "src/keep.ts" \
+    "$(cd "$GLOBTMP"; CHECKUP_EXCLUDE='a/b/*'; filter a/b/c/x.js a/b/top.js src/keep.ts)"
+rm -rf "$GLOBTMP"
+
 echo ""
 echo "resolve_scan_roots: whole-tree default; override narrows to existing"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
@@ -108,6 +122,34 @@ if command -v git > /dev/null 2>&1; then
       git add -A && git commit -qm init >/dev/null 2>&1 )
     got=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
     assert_eq "tracked non-src kept, gitignored excluded" "scripts/build.py,src/a.ts" "$got"
+    rm -rf "$G"
+else
+    echo "  ⊘ skipped — git not installed"
+fi
+
+echo ""
+echo "author-declared excludes: .gitattributes linguist-generated/-vendored (#109)"
+if command -v git > /dev/null 2>&1; then
+    G="$HOME/.checkup-attr.$$"; rm -rf "$G"; mkdir -p "$G/src" "$G/gen" "$G/vendor"
+    ( cd "$G"
+      git init -q && git config user.email t@t && git config user.name t
+      # gen/* declared generated (=true); vendor/** declared vendored (bare set);
+      # an explicit =false must NOT exclude.
+      printf 'gen/* linguist-generated=true\nvendor/** linguist-vendored\nsrc/keep.js linguist-generated=false\n' > .gitattributes
+      printf 'export const a=1;\n' > src/a.ts
+      printf 'export const k=1;\n' > src/keep.js          # =false → kept
+      printf 'export const g=1;\n' > gen/bundle.js        # generated → excluded
+      printf '{"x":1}\n'           > gen/data.json        # generated → excluded (keep-set too)
+      printf 'export const v=1;\n' > vendor/lib.js        # vendored → excluded
+      git add -A && git commit -qm init >/dev/null 2>&1 )
+    inv=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
+    assert_eq "source inventory drops generated/vendored, keeps =false + first-party" \
+        "src/a.ts,src/keep.js" "$inv"
+    keep=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_scc_keepset; jq -r 'sort|join(",")' "$SCC_KEEP_JSON" )
+    # Keep-set is all-extensions, so the (non-generated) JSON config stays; the
+    # generated .json and the generated/vendored .js are gone; .gitattributes itself stays.
+    assert_eq "scc keep-set drops generated/vendored across all extensions" \
+        ".gitattributes,src/a.ts,src/keep.js" "$keep"
     rm -rf "$G"
 else
     echo "  ⊘ skipped — git not installed"
