@@ -117,6 +117,7 @@ build_source_inventory() {
         find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .git \) -prune -o \
             -type f -print0 2>/dev/null | _filter_inventory > "$lst"
     fi
+    _apply_gitattr_excludes "$lst"          # author-declared generated/vendored (.gitattributes)
     [ -n "${CHECKUP_SRC_ROOTS:-}" ] && SOURCE_SCOPE="override:$SOURCE_SCOPE"
     SOURCE_LST="$lst"
     SOURCE_FILE_COUNT=$(tr -cd '\0' < "$lst" | wc -c | tr -d ' ')
@@ -137,6 +138,33 @@ _filter_keep() {
     done
 }
 
+# Drop paths the repo's author declared generated/vendored via `.gitattributes`
+# (linguist-generated / linguist-vendored) — the highest-confidence, no-regex
+# exclusion (#109 Phase 1). Let git parse the attributes (git check-attr), never a
+# hand-rolled parser. git-only and a no-op without a .gitattributes; rewrites the
+# NUL list at $1 in place, preserving order. `check-attr -z` streams triplets
+# (path NUL attr NUL value NUL); a path is excluded when either attr is "set" or
+# "true" ("false"/"unspecified" keep it).
+_apply_gitattr_excludes() {
+    local lst="$1"
+    [ "${GIT_OK:-false}" = true ] && [ -s "$lst" ] || return 0
+    # Skip the check-attr pass entirely when no .gitattributes is tracked — it would
+    # otherwise stream an "unspecified" triplet per file for nothing on big trees.
+    [ -n "$(git ls-files -z -- '.gitattributes' '*/.gitattributes' 2>/dev/null | head -c1)" ] || return 0
+    local p a v
+    declare -A _flagged=()
+    while IFS= read -r -d '' p && IFS= read -r -d '' a && IFS= read -r -d '' v; do
+        case "$v" in set|true) _flagged["$p"]=1 ;; esac
+    done < <(git check-attr -z --stdin linguist-generated linguist-vendored < "$lst" 2>/dev/null)
+    [ "${#_flagged[@]}" -eq 0 ] && return 0
+    local out="$lst.attr"
+    while IFS= read -r -d '' p; do
+        [ -n "${_flagged[$p]:-}" ] || printf '%s\0' "$p"
+    done < "$lst" > "$out"
+    mv "$out" "$lst"
+    return 0
+}
+
 # Build the scc keep-set: VCS-tracked files (ALL extensions) minus the exclusions,
 # as a JSON array at $RAW_DIR/scc-keep.json (sets SCC_KEEP_JSON). The scc-based
 # engines filter their --by-file output against this (lib/scc-inventory.sh), so
@@ -154,6 +182,7 @@ build_scc_keepset() {
         find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .git \) -prune -o \
             -type f -print0 2>/dev/null | _filter_keep > "$lst"
     fi
+    _apply_gitattr_excludes "$lst"          # author-declared generated/vendored (.gitattributes)
     jq -Rs 'split("\u0000") | map(select(length > 0))' < "$lst" > "$SCC_KEEP_JSON" 2>/dev/null \
         || printf '[]' > "$SCC_KEEP_JSON"
     return 0
