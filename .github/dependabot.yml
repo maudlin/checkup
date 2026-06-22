@@ -1,0 +1,36 @@
+# Dependabot — version updates, deliberately scoped (#111).
+#
+# Only the two ecosystems that are safe to auto-bump on this repo:
+#   - the GitHub Actions used in the workflows
+#   - the Docker base image (a `FROM` tag) in the Dockerfiles
+#
+# Explicitly NOT managed — the bundled security tools (gitleaks, semgrep, scc,
+# lizard, …) are pinned by exact version AND SHA256-verified as `RUN curl` steps
+# inside the Dockerfiles (the download-verification ADR). Those are not `FROM`
+# lines, so Dependabot never sees them — and must not, since bumping a tool out
+# from under its `sha256sum -c` check would break the build by design. There are
+# also no npm/pip/go/cargo manifests at the repo root, so there is no application-
+# dependency ecosystem to manage.
+#
+# Weekly cadence, grouped into one PR per ecosystem to keep the noise low.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
