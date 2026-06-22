@@ -62,6 +62,24 @@ assert_eq "disable list" "mutation unit-tests " "$( load_checkup_config "$F"; pr
 assert_eq "enable list"  "mutation "            "$( load_checkup_config "$F"; printf '%s' "$CHECKUP_ENABLE" )"
 
 echo ""
+echo "top-level exclude: cross-scanner globs (#18) — incl. quoted directory globs"
+F=$(yml 'exclude: [vendor/js/*, "a b/*", build/*]')
+assert_eq "exclude → CHECKUP_EXCLUDE" "vendor/js/* a b/* build/*" \
+    "$( unset CHECKUP_EXCLUDE; load_checkup_config "$F"; printf '%s' "$CHECKUP_EXCLUDE" )"
+assert_eq "exclude flips overridden" "true" \
+    "$( unset CHECKUP_EXCLUDE; load_checkup_config "$F"; printf '%s' "$CHECKUP_OVERRIDDEN" )"
+assert_eq "exclude MERGES with env CHECKUP_EXCLUDE (additive)" "*.min.js vendor/js/* a b/* build/*" \
+    "$( CHECKUP_EXCLUDE='*.min.js'; load_checkup_config "$F"; printf '%s' "$CHECKUP_EXCLUDE" )"
+# A single bare glob (no brackets) is accepted too.
+F=$(yml 'exclude: vendor/*')
+assert_eq "bare single glob" "vendor/*" \
+    "$( unset CHECKUP_EXCLUDE; load_checkup_config "$F"; printf '%s' "$CHECKUP_EXCLUDE" )"
+# Empty list is a no-op (must NOT flip overridden).
+F=$(yml 'exclude: []')
+assert_eq "empty exclude → no-op (overridden stays false)" "false" \
+    "$( unset CHECKUP_EXCLUDE; CHECKUP_OVERRIDDEN=false; load_checkup_config "$F"; printf '%s' "$CHECKUP_OVERRIDDEN" )"
+
+echo ""
 echo "apply_check_toggles empties a disabled check's command, enables mutation"
 out=$( CHECKUP_DISABLE="unit-tests"; CHECKUP_ENABLE="mutation"; CHECKUP_CMD_TEST="npm test"
        apply_check_toggles
