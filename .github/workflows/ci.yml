@@ -13,7 +13,7 @@ jobs:
     name: shellcheck · syntax · tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: ShellCheck (error level)
         run: shellcheck --severity=error bin/*.sh lib/*.sh docker/*.sh test/*.sh
@@ -64,7 +64,7 @@ jobs:
     name: build checkup-core image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Validates the core Dockerfile and that the pinned tool downloads still
       # resolve. The checkup-dotnet overlay (~2 GB, .NET SDK) is built and tested
@@ -93,7 +93,7 @@ jobs:
     name: hygiene (no internal references)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Enforce the public-repo rule (AGENTS.md): no internal/client identifiers
       # in the tree. The denylist lives in the BANNED_TERMS repo variable, not in
