@@ -9,3 +9,7 @@ node_modules/
 
 # OS cruft
 .DS_Store
+
+# Local agent tooling (personal slash-commands, scratch agents, settings) — a
+# you-thing, not part of the template (AGENTS.md: tailoring stays in your copy).
+.claude/
