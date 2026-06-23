@@ -456,6 +456,29 @@ COVERAGE_NARROWED=false; [ -n "${CHECKUP_SRC_ROOTS:-}" ] && COVERAGE_NARROWED=tr
 # can't run, #79) — surfaced so the gap is loud, never a silent false-pass.
 COVERAGE_UNMEASURED=$(printf '%s\n' "${CPLX_UNMEASURED[@]}" | jq -R . | jq -s 'map(select(length>0))')
 
+# Coverage-by-category (#117 Phase 3): attribute every excluded file to a source
+# (convention / author-declared / generated markers) over the ALL-extension keep-set
+# — the same denominator scc/identity use — and surface "% excluded" as a first-class
+# signal. Built by build_scc_keepset; absent on a non-VCS / no-scc target → 0s.
+COVERAGE_TRACKED=${SCC_CANDIDATE_COUNT:-0}
+COVERAGE_FIRSTPARTY=${SCC_KEEP_COUNT:-0}
+COVERAGE_EXC_GENERATED=${GENERATED_EXCLUDED_COUNT:-0}
+COVERAGE_EXC_AUTHOR=${GITATTR_EXCLUDED_COUNT:-0}
+COVERAGE_EXC_CONVENTION=${CONVENTION_EXCLUDED_COUNT:-0}
+COVERAGE_EXC_TOTAL=$(( COVERAGE_EXC_GENERATED + COVERAGE_EXC_AUTHOR + COVERAGE_EXC_CONVENTION ))
+COVERAGE_PCT_EXCLUDED=0
+[ "$COVERAGE_TRACKED" -gt 0 ] && COVERAGE_PCT_EXCLUDED=$(( COVERAGE_EXC_TOTAL * 100 / COVERAGE_TRACKED ))
+
+# Single-directory concentration (#117 Phase 3, plan §6.5): the markerless flat-
+# vendored detector. Re-uses the one scc --by-file walk (ensured during detection,
+# above) filtered to the keep-set; null when scc is absent or no dir dominates.
+COVERAGE_CONCENTRATION=null
+if [ "${SCC_BYFILE_OK:-false}" = true ]; then
+    COVERAGE_CONCENTRATION=$(scc_concentration "$SCC_KEEP_JSON" "${CHECKUP_CONCENTRATION_PCT:-25}" < "$SCC_BYFILE" 2>/dev/null || echo null)
+    [ -z "$COVERAGE_CONCENTRATION" ] && COVERAGE_CONCENTRATION=null
+    echo "$COVERAGE_CONCENTRATION" > "$RAW_DIR/concentration.json"
+fi
+
 # Topology (#78): the scan root is a hypothesis. Tell a single package from a
 # declared workspace (healthy) from an UNDECLARED fan-out (a thin orchestrator
 # root over real packages one level down — a mild structural smell, and the case
@@ -501,17 +524,24 @@ jq -n \
     --arg scope "${SOURCE_SCOPE:-unknown}" --arg excl "$COVERAGE_EXCL" \
     --argjson byArea "${COVERAGE_BY_AREA:-{\}}" --argjson narrowed "$COVERAGE_NARROWED" \
     --argjson unmeasured "${COVERAGE_UNMEASURED:-[]}" \
+    --argjson tracked "$COVERAGE_TRACKED" --argjson firstParty "$COVERAGE_FIRSTPARTY" \
+    --argjson excGen "$COVERAGE_EXC_GENERATED" --argjson excAuthor "$COVERAGE_EXC_AUTHOR" \
+    --argjson excConv "$COVERAGE_EXC_CONVENTION" --argjson excTotal "$COVERAGE_EXC_TOTAL" \
+    --argjson pctExcluded "$COVERAGE_PCT_EXCLUDED" --argjson concentration "$COVERAGE_CONCENTRATION" \
     --arg toposhape "$TOPO_SHAPE" --argjson topowstool "$TOPO_WSTOOL_JSON" \
     --arg topolock "$TOPO_ROOT_LOCK" --arg toporeal "$TOPO_ROOT_REAL" \
     --argjson toporoots "$TOPO_ROOTS_JSON" --argjson topochildren "$TOPO_CHILD_COUNT" \
     --argjson topocapped "$TOPO_CAPPED" '
-    {schemaVersion:"1.4",
+    {schemaVersion:"1.5",
      primary: (if $primary=="" then null else $primary end),
      primaryConfidence: $conf,
      sccBreakdownAvailable: ($sccok=="true"),
      stacks: $stacks, manifests: $manifests,
      engines: {complexity:{engine:$ec, reason:$cr, slices:$slices}, duplication:{engine:$ed, reason:$dr}},
-     coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea, unmeasured:$unmeasured},
+     coverage: {assessedFiles:$assessed, scope:$scope, exclusionSource:$excl, narrowed:$narrowed, byArea:$byArea, unmeasured:$unmeasured,
+                tracked:$tracked, firstParty:$firstParty, pctExcluded:$pctExcluded,
+                excluded:{generated:$excGen, authorDeclared:$excAuthor, convention:$excConv, total:$excTotal},
+                concentration:$concentration},
      topology: {shape:$toposhape, workspaceTool:$topowstool, rootHasLockfile:($topolock=="true"), rootHasRealScripts:($toporeal=="true"), assessmentRoots:$toporoots, childCount:$topochildren, capped:$topocapped},
      overridden: ($overridden=="true")}' > "$OUT_DIR/detection.json"
 
@@ -526,6 +556,22 @@ echo -e "   Cross-stack checks always run (secrets, SAST, forensics, stats, docs
 COVERAGE_NOTE="   📐 Coverage: ${SOURCE_FILE_COUNT:-0} source files assessed (scope: ${SOURCE_SCOPE:-unknown}, excludes via ${COVERAGE_EXCL})"
 [ "$COVERAGE_NARROWED" = true ] && COVERAGE_NOTE="$COVERAGE_NOTE — NARROWED by CHECKUP_SRC_ROOTS"
 echo -e "$COVERAGE_NOTE"
+# First-party split (#117 Phase 3): name what was excluded, by category, so the
+# shrink is never silent. "% excluded" is itself a signal (a codegen-heavy repo).
+if [ "$COVERAGE_EXC_TOTAL" -gt 0 ]; then
+    echo -e "   🧮 First-party: ${COVERAGE_FIRSTPARTY}/${COVERAGE_TRACKED} files (${COVERAGE_PCT_EXCLUDED}% excluded — ${COVERAGE_EXC_GENERATED} generated, ${COVERAGE_EXC_AUTHOR} author-declared, ${COVERAGE_EXC_CONVENTION} convention)"
+fi
+# Loud generated banner (#117 §10): default-on exclusion must announce itself + the
+# enumerated list + the kill-switch, so a reader never mistakes the shrink for the truth.
+if [ "${COVERAGE_EXC_GENERATED:-0}" -gt 0 ]; then
+    echo -e "   ${YELLOW}🤖 Excluded ${COVERAGE_EXC_GENERATED} generated file(s)${NC} (banner-shaped markers) — enumerated in raw/scc-keep.lst.generated · keep them with CHECKUP_EXCLUDE_GENERATED=0"
+fi
+# Single-directory concentration caveat (#117 §6.5): a dir dominated by a language
+# foreign to the repo's primary — looks vendored. Name it + the one-line fix.
+if [ "$COVERAGE_CONCENTRATION" != "null" ]; then
+    read -r CONC_DIR CONC_PCT CONC_FILES CONC_LANG CONC_REPOLANG < <(echo "$COVERAGE_CONCENTRATION" | jq -r '"\(.dir) \(.pct) \(.files) \(.lang) \(.repoLang)"')
+    echo -e "   ${YELLOW}📦 Concentration:${NC} ${CONC_DIR}/ is ${CONC_PCT}% of all code (${CONC_FILES} files, mostly ${CONC_LANG}; the codebase is mostly ${CONC_REPOLANG}) — looks vendored. To exclude: CHECKUP_EXCLUDE='${CONC_DIR}/*' (or add to .checkup.yml exclude:)"
+fi
 [ "${#CPLX_UNMEASURED[@]}" -gt 0 ] && echo -e "   ${YELLOW}⚠️  Not measured:${NC} ${CPLX_UNMEASURED[*]}"
 case "$TOPO_SHAPE" in
     undeclared-fan-out) echo -e "   ${YELLOW}🧩 Topology:${NC} undeclared fan-out — ${TOPO_CHILD_COUNT} sub-package(s) below an orchestrator root (${TOPO_ASSESSMENT_ROOTS[*]}); the root scan can't see them" ;;

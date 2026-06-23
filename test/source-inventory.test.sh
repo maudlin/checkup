@@ -156,7 +156,7 @@ else
 fi
 
 echo ""
-echo "generated-marker exclusion: opt-in, banner-shaped, keeps marker-quoting first-party (#114)"
+echo "generated-marker exclusion: default-on (#117), banner-shaped, keeps marker-quoting first-party (#114)"
 if command -v git > /dev/null 2>&1; then
     G="$HOME/.checkup-gen.$$"; rm -rf "$G"; mkdir -p "$G/gen" "$G/src"
     ( cd "$G"
@@ -168,23 +168,52 @@ if command -v git > /dev/null 2>&1; then
       printf '// This documents the @generated convention\npackage y\n'      > src/notes.go     # prose → keep
       printf '# DO NOT EDIT - managed by our own tool\nx=1\n'                > src/migrate.py   # bare DO NOT EDIT → keep
       git add -A && git commit -qm init >/dev/null 2>&1 )
-    # Opt-in OFF (default): nothing dropped on markers.
-    off=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
-    assert_eq "default (opt-in off) keeps everything" \
-        "gen/api.pb.go,src/Model.cs,src/app.js,src/migrate.py,src/notes.go,src/widget.js" "$off"
-    # Opt-in ON: the three banner-shaped generated files drop; the marker-quoting
-    # first-party files (prose, bare DO NOT EDIT) are kept (Morlock M1).
-    on=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); CHECKUP_EXCLUDE_GENERATED=1; build_source_inventory
-          tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
-    assert_eq "opt-in drops banner-shaped generated, keeps marker-quoting first-party" \
+    # Default ON (#117 flip): the three banner-shaped generated files drop; the
+    # marker-quoting first-party files (prose, bare DO NOT EDIT) are kept (Morlock M1).
+    on=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
+    assert_eq "default-on drops banner-shaped generated, keeps marker-quoting first-party" \
         "src/app.js,src/migrate.py,src/notes.go" "$on"
-    cnt=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); CHECKUP_EXCLUDE_GENERATED=1; build_source_inventory; printf '%s' "$GENERATED_EXCLUDED_COUNT" )
-    assert_eq "GENERATED_EXCLUDED_COUNT set" "3" "$cnt"
-    enum=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); CHECKUP_EXCLUDE_GENERATED=1; build_source_inventory; tr '\0' '\n' < "$RAW_DIR/source-files.lst.generated" | sort | paste -sd',' - )
+    # Kill-switch: CHECKUP_EXCLUDE_GENERATED=0 restores the whole tree.
+    off=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); CHECKUP_EXCLUDE_GENERATED=0; build_source_inventory; tr '\0' '\n' < "$SOURCE_LST" | sort | paste -sd',' - )
+    assert_eq "kill-switch (=0) keeps everything" \
+        "gen/api.pb.go,src/Model.cs,src/app.js,src/migrate.py,src/notes.go,src/widget.js" "$off"
+    cnt=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; printf '%s' "$GENERATED_EXCLUDED_COUNT" )
+    assert_eq "GENERATED_EXCLUDED_COUNT set (default-on)" "3" "$cnt"
+    enum=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_source_inventory; tr '\0' '\n' < "$RAW_DIR/source-files.lst.generated" | sort | paste -sd',' - )
     assert_eq "drops enumerated (loud, not silent)" "gen/api.pb.go,src/Model.cs,src/widget.js" "$enum"
     rm -rf "$G"
 else
     echo "  ⊘ skipped — git not installed"
+fi
+
+echo ""
+echo "build_scc_keepset: coverage-by-category counts (convention/author/generated, #117)"
+if command -v git > /dev/null 2>&1 && command -v jq > /dev/null 2>&1; then
+    G="$HOME/.checkup-cov.$$"; rm -rf "$G"; mkdir -p "$G/src" "$G/external" "$G/gen"
+    ( cd "$G"
+      git init -q && git config user.email t@t && git config user.name t
+      # NB: a non-builtin dir name (external/), so the author-declared exclusion is
+      # what catches it — `vendor/` would be caught by the convention stage first.
+      printf 'external/** linguist-vendored\n' > .gitattributes
+      printf 'export const a=1;\n' > src/a.ts                                  # first-party (keep)
+      printf '{"x":1}\n'           > src/data.json                            # first-party config (keep, all-ext)
+      printf 'export const v=1;\n' > external/lib.js                          # author-declared vendored → excluded
+      printf 'export const m=1;\n' > src/x.min.js                             # convention suffix → excluded
+      printf '// @generated\nexport const g=1;\n' > gen/api.js                # generated marker → excluded
+      git add -A && git commit -qm init >/dev/null 2>&1 )
+    run() { ( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_scc_keepset; printf '%s' "${!1}" ); }
+    assert_eq "SCC_CANDIDATE_COUNT = 6 (all tracked, incl .gitattributes)" "6" "$(run SCC_CANDIDATE_COUNT)"
+    assert_eq "CONVENTION_EXCLUDED_COUNT = 1 (.min.js)"                    "1" "$(run CONVENTION_EXCLUDED_COUNT)"
+    assert_eq "GITATTR_EXCLUDED_COUNT = 1 (vendor/lib.js)"                 "1" "$(run GITATTR_EXCLUDED_COUNT)"
+    assert_eq "GENERATED_EXCLUDED_COUNT = 1 (gen/api.js)"                  "1" "$(run GENERATED_EXCLUDED_COUNT)"
+    assert_eq "SCC_KEEP_COUNT = 3 (a.ts, data.json, .gitattributes)"      "3" "$(run SCC_KEEP_COUNT)"
+    # The deltas must partition the candidate set exactly (no double count, no leak).
+    part=$( cd "$G"; GIT_OK=true; RAW_DIR="$G/raw"; SCAN_ROOTS=(.); build_scc_keepset
+            echo $(( SCC_KEEP_COUNT + CONVENTION_EXCLUDED_COUNT + GITATTR_EXCLUDED_COUNT + GENERATED_EXCLUDED_COUNT )) )
+    assert_eq "kept + excluded categories == candidates" "6" "$part"
+    rm -rf "$G"
+else
+    echo "  ⊘ skipped — git/jq not installed"
 fi
 
 echo ""
