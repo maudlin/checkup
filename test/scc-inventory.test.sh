@@ -175,5 +175,40 @@ assert_eq "stable under reorder" \
     "$(scc_concentration "$CONC_KEEP" 25 < "$TMP/conc-shuf.json" | jq -S -c '.')"
 
 echo ""
+echo "scc_keep_for_root: per-package slice of the keep-set (#78 increment 2)"
+RAW_DIR="$TMP"
+SCC_KEEP_JSON="$TMP/keep-slice.json"
+echo '["backend/src/a.go","backend/cmd/main.go","frontend/src/app.ts","./frontend/src/util.ts","top.md"]' > "$SCC_KEEP_JSON"
+
+# "." returns the SAME file path unchanged → the byte-identical single-package gate.
+assert_eq "root '.' returns the full keep-set path unchanged" "$SCC_KEEP_JSON" "$(scc_keep_for_root .)"
+
+BK=$(scc_keep_for_root backend)
+assert_eq "backend slice keeps only backend/ files" \
+    '["backend/src/a.go","backend/cmd/main.go"]' "$(jq -c '.' "$BK")"
+assert_eq "slice cached under RAW_DIR" "$TMP/scc-keep.backend.json" "$BK"
+
+# The "./"-prefixed entry is normalised before matching but preserved verbatim in
+# the slice (scc-aggregate.jq normalises Location at join time anyway).
+FE=$(scc_keep_for_root frontend)
+assert_eq "frontend slice keeps both (incl. ./-prefixed, verbatim)" \
+    '["frontend/src/app.ts","./frontend/src/util.ts"]' "$(jq -c '.' "$FE")"
+
+assert_eq "no-match root → empty array" '[]' "$(jq -c '.' "$(scc_keep_for_root nope)")"
+
+NESTED=$(scc_keep_for_root "packages/api")
+assert_eq "nested root flattens '/' to '_' in the filename" \
+    "$TMP/scc-keep.packages_api.json" "$NESTED"
+
+# Round-trip: a backend slice fed to scc_breakdown sums ONLY backend code.
+echo '[{"Name":"Go","Files":[
+  {"Location":"backend/src/a.go","Code":30,"Complexity":3,"Lines":40},
+  {"Location":"backend/cmd/main.go","Code":20,"Complexity":2,"Lines":25}]},
+ {"Name":"TypeScript","Files":[
+  {"Location":"frontend/src/app.ts","Code":99,"Complexity":9,"Lines":120}]}]' > "$TMP/slice-byfile.json"
+assert_eq "breakdown over backend slice sums only backend Go" "50" \
+    "$(scc_breakdown "$BK" < "$TMP/slice-byfile.json" | jq 'map(.Code)|add')"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -82,9 +82,13 @@ across the whole thing, honestly*.
   the project-built checks once *per* sub-package — correctness/lint (cluster A),
   dependency-health + `circular-deps` (cluster B), and `unused-code` + `coverage`
   (cluster C) — records namespaced per package (`backend/npm-audit`) with finding
-  paths re-prefixed so the by-file/focus join stays coherent (Phase 2). A single
-  package / declared workspace is unchanged (byte-identical). Declared workspaces
-  (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
+  paths re-prefixed so the by-file/focus join stays coherent (Phase 2). The
+  scc-measured **codebase statistics** recover too: each sub-package's totals are
+  re-aggregated from the *one* cached `scc --by-file` walk, sliced to its subtree
+  (reuse, never re-walk), labelled per package (`api/codebase-stats`) — Phase 2b,
+  first increment. A single package / declared workspace is unchanged
+  (byte-identical). Declared workspaces (npm/pnpm/yarn/nx/turbo/lerna) are healthy
+  and don't alarm.
 - **`lizard`** as a true multi-language complexity + duplication engine, and a
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /
