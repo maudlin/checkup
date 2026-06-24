@@ -79,11 +79,12 @@ across the whole thing, honestly*.
   fan-out / orphan root) and flags an undeclared fan-out — a thin orchestrator
   root over real packages one level down — as a headline macro-alarm, recording
   the sub-packages as `assessmentRoots` (Phase 1). Then **recovers** by running
-  the project-built checks once *per* sub-package (dependency-health +
-  correctness/lint clusters), records namespaced per package
-  (`backend/npm-audit`) with finding paths re-prefixed so the by-file/focus join
-  stays coherent (Phase 2). A single package / declared workspace is unchanged.
-  Declared workspaces (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
+  the project-built checks once *per* sub-package — correctness/lint (cluster A),
+  dependency-health + `circular-deps` (cluster B), and `unused-code` + `coverage`
+  (cluster C) — records namespaced per package (`backend/npm-audit`) with finding
+  paths re-prefixed so the by-file/focus join stays coherent (Phase 2). A single
+  package / declared workspace is unchanged (byte-identical). Declared workspaces
+  (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
 - **`lizard`** as a true multi-language complexity + duplication engine, and a
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /
