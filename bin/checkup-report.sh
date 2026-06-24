@@ -98,6 +98,8 @@ if [ -f "$OUT_DIR/detection.json" ]; then
     COVERAGE_TXT=$(jq -r '
         .coverage // empty
         | "**Coverage:** \(.assessedFiles) source files assessed · scope: \(.scope) · excludes via \(.exclusionSource)"
+          + (if (.excluded.total // 0) > 0 then " · \(.firstParty)/\(.tracked) first-party (\(.pctExcluded)% excluded: \(.excluded.generated) generated, \(.excluded.authorDeclared) author-declared, \(.excluded.convention) convention)" else "" end)
+          + (if .concentration then " · ⚠️ \(.concentration.dir)/ is \(.concentration.pct)% of code (\(.concentration.files) files) \(.concentration.lang) tree vs \(.concentration.repoLang) codebase — exclude if vendored: CHECKUP_EXCLUDE=\u0027\(.concentration.dir)/*\u0027" else "" end)
           + (if .narrowed then " · ⚠️ scope NARROWED by CHECKUP_SRC_ROOTS" else "" end)
           + (if (.unmeasured // []) | length > 0 then " · ⚠️ not measured: " + ((.unmeasured) | join("; ")) else "" end)
     ' "$OUT_DIR/detection.json" 2>/dev/null)

@@ -168,6 +168,7 @@ _apply_gitattr_excludes() {
     while IFS= read -r -d '' p && IFS= read -r -d '' a && IFS= read -r -d '' v; do
         case "$v" in set|true) _flagged["$p"]=1 ;; esac
     done < <(git check-attr -z --stdin linguist-generated linguist-vendored < "$lst" 2>/dev/null)
+    GITATTR_EXCLUDED_COUNT="${#_flagged[@]}"   # author-declared (coverage signal, #117)
     [ "${#_flagged[@]}" -eq 0 ] && return 0
     local out="$lst.attr"
     while IFS= read -r -d '' p; do
@@ -178,15 +179,18 @@ _apply_gitattr_excludes() {
 }
 
 # Drop files whose head carries a BANNER-SHAPED generated marker (#114, plan 0002
-# Phase 2) — the corvus lever. OPT-IN via CHECKUP_EXCLUDE_GENERATED (default off)
-# so the regex is field-tested with zero default-behaviour change before any flip
-# to default-on. Rewrites the NUL list at $1 in place (order-preserving) and
-# ENUMERATES the dropped files to "<lst>.generated" (loud, not a silent count —
-# the guard that earns the subtractive design; over-exclusion is the danger).
-# Sets GENERATED_EXCLUDED_COUNT. Runs with cwd == TARGET so the relative paths open.
+# Phase 2) — the corvus lever. DEFAULT-ON since Phase 3 (#117): the markers are
+# field-proven and the shrink is announced by a loud banner, so excluding generated
+# code is the honest default. KILL-SWITCH: `CHECKUP_EXCLUDE_GENERATED=0` (also
+# false/no/off) restores the whole tree. Rewrites the NUL list at $1 in place
+# (order-preserving) and ENUMERATES the dropped files to "<lst>.generated" (loud,
+# not a silent count — the guard that earns the subtractive design; over-exclusion
+# is the danger). Sets GENERATED_EXCLUDED_COUNT. Runs with cwd == TARGET so the
+# relative paths open.
 _apply_generated_excludes() {
     local lst="$1"
-    [ -n "${CHECKUP_EXCLUDE_GENERATED:-}" ] && [ -s "$lst" ] || return 0
+    case "${CHECKUP_EXCLUDE_GENERATED:-1}" in 0|false|no|off) return 0 ;; esac
+    [ -s "$lst" ] || return 0
     local flagged="$lst.generated"
     # grep -l short-circuits on the first match per file (the marker is at the head),
     # so even a mostly-generated tree is cheap; -I skips binaries; LC_ALL=C makes the
@@ -209,20 +213,38 @@ _apply_generated_excludes() {
 # engines filter their --by-file output against this (lib/scc-inventory.sh), so
 # stats/identity reflect first-party code, not the whole tree (#109). Same tiers
 # as build_source_inventory; run AFTER resolve_scan_roots, cwd == TARGET.
+#
+# Subtraction is STAGED so the coverage signal (#117 Phase 3) can attribute every
+# excluded file to a category — convention (builtin globs + CHECKUP_EXCLUDE),
+# author-declared (.gitattributes), generated (markers) — computed from the count
+# delta at each stage (robust to the helpers' internals). Sets, over the ALL-
+# extension candidate set: SCC_CANDIDATE_COUNT (everything tracked), SCC_KEEP_COUNT
+# (kept), CONVENTION_EXCLUDED_COUNT, GITATTR_EXCLUDED_COUNT, GENERATED_EXCLUDED_COUNT.
 build_scc_keepset() {
-    local lst="$RAW_DIR/scc-keep.lst"
+    local lst="$RAW_DIR/scc-keep.lst" raw="$RAW_DIR/scc-keep.raw"
     SCC_KEEP_JSON="$RAW_DIR/scc-keep.json"
     mkdir -p "$RAW_DIR"
+    # Enumerate ALL tracked candidates first (every extension), so each subtraction
+    # stage below has an honest denominator.
     if [ "${GIT_OK:-false}" = true ]; then
-        git ls-files -z -- "${SCAN_ROOTS[@]}" 2>/dev/null | _filter_keep > "$lst"
+        git ls-files -z -- "${SCAN_ROOTS[@]}" 2>/dev/null > "$raw"
     elif command -v fd > /dev/null 2>&1; then
-        fd --type f --hidden --no-follow --print0 . "${SCAN_ROOTS[@]}" 2>/dev/null | _filter_keep > "$lst"
+        fd --type f --hidden --no-follow --print0 . "${SCAN_ROOTS[@]}" 2>/dev/null > "$raw"
     else
         find "${SCAN_ROOTS[@]}" \( -name node_modules -o -name .git \) -prune -o \
-            -type f -print0 2>/dev/null | _filter_keep > "$lst"
+            -type f -print0 2>/dev/null > "$raw"
     fi
+    SCC_CANDIDATE_COUNT=$(tr -cd '\0' < "$raw" | wc -c | tr -d ' ')
+    _filter_keep < "$raw" > "$lst"          # convention globs + CHECKUP_EXCLUDE
+    rm -f "$raw"
+    local after_conv; after_conv=$(tr -cd '\0' < "$lst" | wc -c | tr -d ' ')
+    CONVENTION_EXCLUDED_COUNT=$(( SCC_CANDIDATE_COUNT - after_conv ))
     _apply_gitattr_excludes "$lst"          # author-declared generated/vendored (.gitattributes)
-    _apply_generated_excludes "$lst"        # generated-file markers (#114, opt-in CHECKUP_EXCLUDE_GENERATED)
+    local after_attr; after_attr=$(tr -cd '\0' < "$lst" | wc -c | tr -d ' ')
+    GITATTR_EXCLUDED_COUNT=$(( after_conv - after_attr ))
+    _apply_generated_excludes "$lst"        # generated-file markers (#114, default-on; CHECKUP_EXCLUDE_GENERATED=0 disables)
+    SCC_KEEP_COUNT=$(tr -cd '\0' < "$lst" | wc -c | tr -d ' ')
+    GENERATED_EXCLUDED_COUNT=$(( after_attr - SCC_KEEP_COUNT ))
     jq -Rs 'split("\u0000") | map(select(length > 0))' < "$lst" > "$SCC_KEEP_JSON" 2>/dev/null \
         || printf '[]' > "$SCC_KEEP_JSON"
     return 0
