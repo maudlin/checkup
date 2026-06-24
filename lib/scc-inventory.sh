@@ -112,3 +112,27 @@ scc_perfile_findings() {
           ]
         | sort_by( -.ccn, .file )'
 }
+
+# scc_keep_for_root <root>  → prints the path to a keep-set file scoped to <root>.
+#   The per-package measurement recover pass (#78 increment 2): the keep-set
+#   ($SCC_KEEP_JSON) is a JSON array of TARGET-relative first-party paths, so a
+#   sub-package's slice is just the entries under "<root>/". The scc-based
+#   measurement arms then re-aggregate the ONE cached --by-file walk per
+#   sub-package (reuse, never re-walk — same seam as scc_breakdown).
+#   "." (single package / declared-workspace root) returns the FULL keep-set
+#   path UNCHANGED → byte-identical to the pre-#78 single-package behaviour (the
+#   acceptance gate). Other roots cache the slice at $RAW_DIR/scc-keep.<ns>.json
+#   (path separators in <ns> flattened to '_' for a safe filename). A leading
+#   "./" on either side is normalised away, mirroring scc-aggregate.jq, so the
+#   slice is robust to the keep-set's prefix style. Needs $SCC_KEEP_JSON + $RAW_DIR.
+scc_keep_for_root() {
+    local root="$1"
+    if [ "$root" = "." ]; then
+        printf '%s' "$SCC_KEEP_JSON"
+        return 0
+    fi
+    local out="$RAW_DIR/scc-keep.${root//\//_}.json"
+    jq --arg p "${root#./}/" '[ .[] | select((sub("^\\./"; "")) | startswith($p)) ]' \
+        "$SCC_KEEP_JSON" > "$out" 2>/dev/null || printf '[]' > "$out"
+    printf '%s' "$out"
+}

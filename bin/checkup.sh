@@ -1758,27 +1758,41 @@ else
         echo -e "${YELLOW}⚠️  scc produced no usable output${NC}"
         write_failed "codebase-stats" "scc returned no usable --by-file JSON" "$SCC_INTENT"
     else
-        STATS_BREAKDOWN=$(scc_breakdown "$SCC_KEEP_JSON" < "$SCC_BYFILE")
-        # "FILES CODE COMPLEXITY", reconstructed from the breakdown (faithful Σ).
-        read -r TOTAL_FILES TOTAL_CODE COMPLEXITY <<< "$(scc_breakdown_total "$STATS_BREAKDOWN")"
-        SCC_TOP_LANGS=$(scc_breakdown_toplangs "$STATS_BREAKDOWN" 3)
-        [ -z "$SCC_TOP_LANGS" ] && SCC_TOP_LANGS="n/a"
+        # Per-package recovery (#78 increment 2): on an undeclared fan-out, measure
+        # EACH assessment root off the ONE cached --by-file walk — slice the keep-set
+        # to the sub-package subtree (reuse, never re-walk) and emit a per-package
+        # record via SLUG_NS. Single package / declared workspace →
+        # TOPO_ASSESSMENT_ROOTS is ("."), the slice is the full keep-set, SLUG_NS
+        # stays empty → record + console output are byte-identical to before (gate).
+        for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+            SLUG_NS=""; [ "$TOPO_ROOT" != "." ] && SLUG_NS="$TOPO_ROOT"
+            STATS_KEEP=$(scc_keep_for_root "$TOPO_ROOT")
+            STATS_BREAKDOWN=$(scc_breakdown "$STATS_KEEP" < "$SCC_BYFILE")
+            # "FILES CODE COMPLEXITY", reconstructed from the breakdown (faithful Σ).
+            read -r TOTAL_FILES TOTAL_CODE COMPLEXITY <<< "$(scc_breakdown_total "$STATS_BREAKDOWN")"
+            SCC_TOP_LANGS=$(scc_breakdown_toplangs "$STATS_BREAKDOWN" 3)
+            [ -z "$SCC_TOP_LANGS" ] && SCC_TOP_LANGS="n/a"
 
-        # Console table from the first-party breakdown (replaces scc's whole-tree
-        # tabular output, which would contradict the first-party totals).
-        printf "%-24s %8s %12s %12s\n" "Language" "Files" "Code" "Complexity"
-        echo "------------------------------------------------------------"
-        echo "$STATS_BREAKDOWN" | jq -r '.[] | [.Name, .Count, .Code, .Complexity] | @tsv' \
-            | awk -F'\t' '{ printf "%-24s %8s %12s %12s\n", $1, $2, $3, $4 }'
-        echo ""
-        echo -e "${BLUE}📈 Summary:${NC} ${TOTAL_CODE:-0} lines of code across ${TOTAL_FILES:-0} files (first-party)"
-        echo -e "   Top: ${SCC_TOP_LANGS} | Complexity: ${COMPLEXITY:-0}"
+            # On a fan-out, label which sub-package this table describes; a single
+            # package prints no header (byte-identical to before).
+            [ -n "$SLUG_NS" ] && echo -e "${BLUE}📦 ${TOPO_ROOT}/${NC}"
+            # Console table from the first-party breakdown (replaces scc's whole-tree
+            # tabular output, which would contradict the first-party totals).
+            printf "%-24s %8s %12s %12s\n" "Language" "Files" "Code" "Complexity"
+            echo "------------------------------------------------------------"
+            echo "$STATS_BREAKDOWN" | jq -r '.[] | [.Name, .Count, .Code, .Complexity] | @tsv' \
+                | awk -F'\t' '{ printf "%-24s %8s %12s %12s\n", $1, $2, $3, $4 }'
+            echo ""
+            echo -e "${BLUE}📈 Summary:${NC} ${TOTAL_CODE:-0} lines of code across ${TOTAL_FILES:-0} files (first-party)"
+            echo -e "   Top: ${SCC_TOP_LANGS} | Complexity: ${COMPLEXITY:-0}"
 
-        # Standardised parsed JSON for the tool-agnostic markdown writer.
-        write_parsed "codebase-stats" "pass" "${TOTAL_FILES:-0}" \
-            "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files, first-party (top: ${SCC_TOP_LANGS})" \
-            '[]' \
-            "$SCC_INTENT"
+            # Standardised parsed JSON for the tool-agnostic markdown writer.
+            write_parsed "codebase-stats" "pass" "${TOTAL_FILES:-0}" \
+                "${TOTAL_CODE:-0} lines across ${TOTAL_FILES:-0} files, first-party (top: ${SCC_TOP_LANGS})" \
+                '[]' \
+                "$SCC_INTENT"
+        done
+        SLUG_NS=""
     fi
 fi
 echo ""

@@ -207,11 +207,15 @@ resolve), and their records are namespaced — `.slug` carries `<pkg>/<check>` (
 cross-tree by-file / focus join stays coherent, and the renderer maps each to its
 pillar on the base slug. A single package / declared workspace runs the loop once
 at `.` with no namespace — byte-identical to before. Recovered today: the
-dependency-health (`npm-audit`, `deps-freshness`) and correctness/lint
-(`typecheck`, `unit-tests`, `code-quality`, `type-aware-lint`, `build`) clusters.
-The engine-routed / artifact / whole-tree checks (`complexity`, `duplication`,
-`coverage`) stay root-scoped for now — recovering them per package (each needs its
-own engine re-routing) is the remaining slice. Honesty survives recovery: a
+dependency-health (`npm-audit`, `deps-freshness`, `circular-deps`), correctness/lint
+(`typecheck`, `unit-tests`, `code-quality`, `type-aware-lint`, `build`) and
+`unused-code` + `coverage` clusters (Phase 2/2b increment 1), plus the
+scc-measured **`codebase-stats`** — re-aggregated per sub-package by slicing the
+*one* cached `scc --by-file` walk to each root's subtree (`scc_keep_for_root`;
+reuse, never re-walk), so no extra scc cost (Phase 2b increment 2). Still
+root-scoped: the engine-routed `complexity` and `duplication`, which need their
+engine (eslint / lizard / jscpd) re-routed per sub-package — the remaining slice.
+Honesty survives recovery: a
 sub-package whose toolchain can't run still `skip`s with a reason (never
 green-by-default), the floor laid in #85.
 
