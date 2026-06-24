@@ -1043,7 +1043,7 @@ else
 fi
 echo ""
 
-# ─── Topology recover pass (#78) — project-built cluster B (dependency health) ─
+# ─── Topology recover pass (#78) — project-built cluster B (dependency health + circular-deps) ─
 for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
     _RECOVER_CWD="$PWD"; SLUG_NS=""
     if [ "$TOPO_ROOT" != "." ]; then
@@ -1234,10 +1234,6 @@ fi
 fi
 echo ""
 
-    cd "$_RECOVER_CWD"; SLUG_NS=""
-done
-# ─── end recover cluster B ────────────────────────────────────────────────────
-
 # 8. Circular Dependencies (madge)
 # section:    circular-deps
 # purpose:    Detect import cycles via madge. Cycles cause module-init-order
@@ -1297,6 +1293,10 @@ else
 fi
 fi
 echo ""
+
+    cd "$_RECOVER_CWD"; SLUG_NS=""
+done
+# ─── end recover cluster B (dependency health + circular-deps) ──────────────────
 
 # 9. Code Duplication (tiered engine: jscpd → lizard)
 # section:    duplication
@@ -1477,6 +1477,19 @@ else
 fi
 echo ""
 
+# ─── Topology recover pass (#78) — project-built cluster C (per-package code health) ─
+# unused-code + coverage are package-script checks (like clusters A/B); on an
+# undeclared fan-out they must run IN each sub-package or they only ever see the
+# orchestrator root. Single package / declared workspace → one iteration at "."
+# with SLUG_NS empty → byte-identical to before.
+for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+    _RECOVER_CWD="$PWD"; SLUG_NS=""
+    if [ "$TOPO_ROOT" != "." ]; then
+        cd "$TARGET/$TOPO_ROOT" 2>/dev/null || { cd "$_RECOVER_CWD"; continue; }
+        SLUG_NS="$TOPO_ROOT"
+        echo -e "${BLUE}📦 Sub-package: $TOPO_ROOT${NC}"
+    fi
+
 # 10. Unused Code Detection (knip)
 # section:    unused-code
 # purpose:    Detect unused files, exports, and dependencies via knip's
@@ -1647,6 +1660,11 @@ else
 fi
 fi
 echo ""
+
+    cd "$_RECOVER_CWD"; SLUG_NS=""
+done
+# ─── end recover cluster C (per-package: unused-code, coverage) ─────────────────
+
 # 12. Codebase Statistics (scc)
 # section:    codebase-stats
 # purpose:    Track total code size and language breakdown over time.
