@@ -77,6 +77,20 @@ scc_breakdown_toplangs() {
         .[0:$n] | map("\(.Name) \(.Code)") | join(", ")'
 }
 
+# scc_concentration <keepfile> [pct]
+#   stdin:  scc --by-file --format json
+#   stdout: the single-directory concentration finding (plan 0002 §6.5, #117) as
+#           { dir, code, files, totalCode, pct, lang, repoLang }, or "null" when no
+#           kept directory holds ≥ pct (default 25) of the kept code IN A LANGUAGE
+#           FOREIGN to the repo's primary. Language-aware so the primary source dir
+#           (the largest dir on any normal repo) is not mistaken for a vendored tree
+#           — the markerless-flat-vendored detector (the dotCMS class). Advisory
+#           banner input. Pure transform in lib/scc-concentration.jq (unit-tested).
+scc_concentration() {
+    local keepfile="$1" pct="${2:-25}"
+    jq --slurpfile keep "$keepfile" --argjson pct "$pct" -f "$CHECKUP_HOME/lib/scc-concentration.jq"
+}
+
 # scc_perfile_findings <keepfile>
 #   stdin:  scc --by-file --format json
 #   stdout: complexity findings array (file/line/ccn/lines/code/severity/message),

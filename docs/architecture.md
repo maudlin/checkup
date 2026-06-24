@@ -131,7 +131,7 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
 
 ```jsonc
 {
-  "schemaVersion": "1.4",
+  "schemaVersion": "1.5",
   "primary": "node",                 // largest stack, or null when ambiguous
   "primaryConfidence": "high",       // high (manifest + dominant) | medium | low
   "sccBreakdownAvailable": true,     // false → degraded to manifest/presence signal
@@ -152,10 +152,21 @@ The plan is printed for a human and persisted to `detection.json` (in `OUT_DIR`,
   // dir; narrowed = true when CHECKUP_SRC_ROOTS restricted the scope; unmeasured
   // names what a routed engine could NOT cover (e.g. JS/TS complexity when no
   // resolvable ESLint config — #79), so the gap is explicit, not a false pass.
+  // tracked/firstParty/excluded/pctExcluded (#117, schema 1.5) attribute every
+  // excluded file to a category (generated markers | author-declared .gitattributes
+  // | convention globs) over the ALL-extension keep-set scc/identity use — "%
+  // excluded" is itself a signal. concentration (plan §6.5) names a single
+  // directory that dominates the first-party code (a possible markerless vendored
+  // tree) + the one-line fix; language-aware (a dir dominated by a language foreign
+  // to the repo's primary), so the source dir itself is never mistaken for vendored;
+  // null when scc is absent or no foreign dir dominates.
   "coverage": {
     "assessedFiles": 412, "scope": "git", "exclusionSource": ".gitignore",
     "narrowed": false, "byArea": { "src": 280, "server": 110, "scripts": 22 },
-    "unmeasured": []                 // e.g. ["JS/TS complexity (no resolvable root ESLint config)"]
+    "unmeasured": [],                // e.g. ["JS/TS complexity (no resolvable root ESLint config)"]
+    "tracked": 4820, "firstParty": 470, "pctExcluded": 90,
+    "excluded": { "generated": 4100, "authorDeclared": 180, "convention": 70, "total": 4350 },
+    "concentration": null            // or { "dir": "webapp/html/js", "code", "files", "totalCode", "pct": 25, "lang": "JavaScript", "repoLang": "Java" }
   },
   // Package topology (#78): the scan root is a hypothesis. shape distinguishes a
   // single package from a declared workspace (healthy) from an UNDECLARED fan-out

@@ -125,5 +125,55 @@ B2=$(scc_breakdown "$KEEP" < "$TMP/shuffled.json")
 assert_eq "breakdown stable under input reorder" "$(printf '%s' "$BREAKDOWN" | jq -S -c '.')" "$(printf '%s' "$B2" | jq -S -c '.')"
 
 echo ""
+echo "single-dir concentration (§6.5, #117): foreign-language dir, depth-maximal, deterministic"
+# The repo is mostly C# (the real code under src/); a markerless flat-vendored JS
+# tree sits under webapp/html/js (still in the keep-set — no marker/convention
+# catches it). The detector must name the FOREIGN-language tree, not the larger
+# primary C# dir (the false positive that would fire on every normal repo).
+CONC_BYFILE="$TMP/conc.json"
+cat > "$CONC_BYFILE" <<'JSON'
+[
+  {"Name":"C#","Files":[
+    {"Location":"src/A.cs","Language":"C#","Code":500,"Complexity":50,"Lines":600},
+    {"Location":"src/B.cs","Language":"C#","Code":500,"Complexity":50,"Lines":600}
+  ]},
+  {"Name":"JavaScript","Files":[
+    {"Location":"./webapp/html/js/a.js","Language":"JavaScript","Code":200,"Complexity":5,"Lines":2000},
+    {"Location":"webapp/html/js/b.js","Language":"JavaScript","Code":200,"Complexity":5,"Lines":2000}
+  ]}
+]
+JSON
+CONC_KEEP="$TMP/conc-keep.json"
+echo '["src/A.cs","src/B.cs","webapp/html/js/a.js","webapp/html/js/b.js"]' > "$CONC_KEEP"
+
+CONC=$(scc_concentration "$CONC_KEEP" 25 < "$CONC_BYFILE")
+# 400/1400 = 28% under webapp/html/js; JS ≠ C# (repo primary) → flagged. src (71%,
+# C# = primary) is NOT flagged despite being larger.
+assert_eq "names the FOREIGN-language tree, not the bigger primary dir" "webapp/html/js" "$(printf '%s' "$CONC" | jq -r '.dir')"
+assert_eq "share floored to pct"           "28"             "$(printf '%s' "$CONC" | jq -r '.pct')"
+assert_eq "file count under the dir"       "2"              "$(printf '%s' "$CONC" | jq -r '.files')"
+assert_eq "totalCode = kept code"          "1400"          "$(printf '%s' "$CONC" | jq -r '.totalCode')"
+assert_eq "reports the foreign language"   "JavaScript"     "$(printf '%s' "$CONC" | jq -r '.lang')"
+assert_eq "reports the repo's language"    "C#"             "$(printf '%s' "$CONC" | jq -r '.repoLang')"
+
+echo ""
+echo "concentration: same-language large dir is NOT flagged (no primary-dir false positive)"
+# Keep ONLY the C# — now src is 100% C# = repoLang → nothing foreign → null.
+echo '["src/A.cs","src/B.cs"]' > "$TMP/conc-cs.json"
+assert_eq "all-primary-language repo → null" "null" "$(scc_concentration "$TMP/conc-cs.json" 25 < "$CONC_BYFILE")"
+
+echo ""
+echo "concentration: threshold respected + degrade cases"
+assert_eq "pct above share → null" "null" "$(scc_concentration "$CONC_KEEP" 40 < "$CONC_BYFILE")"
+assert_eq "empty keep → null"      "null" "$(scc_concentration "$TMP/empty.json" 25 < "$CONC_BYFILE")"
+
+echo ""
+echo "concentration: deterministic under input reorder (#96)"
+jq '[ .[] | {Name, Files:(.Files|reverse)} ] | reverse' "$CONC_BYFILE" > "$TMP/conc-shuf.json"
+assert_eq "stable under reorder" \
+    "$(scc_concentration "$CONC_KEEP" 25 < "$CONC_BYFILE" | jq -S -c '.')" \
+    "$(scc_concentration "$CONC_KEEP" 25 < "$TMP/conc-shuf.json" | jq -S -c '.')"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
