@@ -262,6 +262,29 @@ inventory_paths() {
     done < "$SOURCE_LST"
 }
 
+# Emit (NUL-delimited) the inventory paths under <root>, RELATIVE to <root> (the
+# "<root>/" prefix stripped), filtered by [re] like inventory_paths. The
+# per-package measurement recover pass (#78): a section cd'd into a sub-package
+# needs its slice of the whole-tree inventory with CWD-relative paths (so lizard,
+# run in the package, finds them). <root> "." is the identity — the whole
+# inventory, TARGET-relative — so a single package / declared workspace is
+# byte-identical to inventory_paths. Consume like inventory_paths.
+inventory_paths_under() {
+    local root="$1" re="${2:-}" p pre
+    [ -f "${SOURCE_LST:-}" ] || return 0
+    if [ "$root" = "." ]; then
+        inventory_paths "$re"
+        return 0
+    fi
+    pre="${root#./}/"
+    while IFS= read -r -d '' p; do
+        case "$p" in "$pre"*) ;; *) continue ;; esac
+        p="${p#"$pre"}"
+        [ -z "$re" ] || [[ "$p" =~ $re ]] || continue
+        printf '%s\0' "$p"
+    done < "$SOURCE_LST"
+}
+
 # The inventory as a JSON array of paths — for filtering a scanner's findings
 # back to the tracked set (e.g. ESLint, which traverses on its own).
 inventory_json() {

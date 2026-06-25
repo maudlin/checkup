@@ -1370,7 +1370,40 @@ DUP_INTENT=$(jq -n '{
     fail_means: "≥5% duplication. Refactor toward shared helpers when the same pattern recurs 3+ times. NOTE: Classic ASP/VBScript has no tokeniser in either engine, so .asp duplication is not measured."
 }')
 
-if [ "$DETECT_ENGINE_DUPLICATION" = "jscpd" ]; then
+# Per-package recovery (#78 increment 3): duplication is engine-routed (jscpd on
+# node packages, lizard elsewhere). On an undeclared fan-out, measure EACH
+# assessment root with its OWN engine — jscpd runs IN the package (npm, cwd =
+# the child), lizard reads the inventory file list sliced to the subtree. Single
+# package / declared workspace → one iteration at "." reusing the whole-tree
+# engine + probes, no cd, SLUG_NS empty → byte-identical to before (the gate).
+for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+_RECOVER_CWD="$PWD"; SLUG_NS=""; DUP_SUBTREE="."
+if [ "$TOPO_ROOT" = "." ]; then
+    DUP_ENGINE="$DETECT_ENGINE_DUPLICATION"; DUP_REASON_R="$DUP_REASON"
+else
+    cd "$TARGET/$TOPO_ROOT" 2>/dev/null || { cd "$_RECOVER_CWD"; continue; }
+    SLUG_NS="$TOPO_ROOT"; DUP_SUBTREE="$TOPO_ROOT"
+    echo -e "${BLUE}📦 Sub-package: $TOPO_ROOT${NC}"
+    # Re-route the engine for THIS child (mirrors the whole-tree routing, scoped to
+    # the subtree): a node package (own package.json + JS/TS-dominant source, or no
+    # scc read) with npm → jscpd; else lizard-parseable source under the child →
+    # lizard; else an honest skip. The child's stack is read from the ONE cached scc
+    # walk, sliced to the subtree (reuse, never re-walk).
+    DUP_ENGINE="none"; DUP_REASON_R="no Node target for jscpd and no lizard-parseable source in $TOPO_ROOT"
+    _CHILD_PRIMARY=""
+    if [ "${SCC_BYFILE_OK:-false}" = true ]; then
+        _CHILD_PRIMARY=$(scc_breakdown "$(scc_keep_for_root "$TOPO_ROOT")" < "$SCC_BYFILE" \
+            | jq -c -f "$CHECKUP_HOME/lib/detect-stacks.jq" 2>/dev/null | jq -r '.[0].stack // ""' 2>/dev/null)
+    fi
+    if [ -f package.json ] && command -v npm > /dev/null 2>&1 \
+       && { [ "$_CHILD_PRIMARY" = "node" ] || [ -z "$_CHILD_PRIMARY" ]; }; then
+        DUP_ENGINE="jscpd"; DUP_REASON_R="node package → jscpd (exact-token)"
+    elif [ -n "$LIZARD_BIN" ] && [ -n "$(inventory_paths_under "$TOPO_ROOT" "$INV_LIZARD_RE" | head -c1)" ]; then
+        DUP_ENGINE="lizard"; DUP_REASON_R="lizard-parseable source → lizard -Eduplicate (identifier-unified)"
+    fi
+fi
+
+if [ "$DUP_ENGINE" = "jscpd" ]; then
     # ---- Tier 1: jscpd (Node best-fit; engine chosen by the detector, #7) ----
     echo "Command: npm run quality:duplicates"
     echo ""
@@ -1427,7 +1460,7 @@ if [ "$DETECT_ENGINE_DUPLICATION" = "jscpd" ]; then
         write_parsed "duplication" "$JSCPD_STATUS" "$DUPLICATION_LINES" "${DUPLICATION_PCT}% duplication across $DUPLICATION_LINES lines (jscpd)" "$JSCPD_TOP" "$DUP_INTENT"
     fi
     fi
-elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
+elif [ "$DUP_ENGINE" = "lizard" ]; then
     # ---- Tier 2: lizard -Eduplicate (language-agnostic clone detection) ----
     echo "Command: lizard -Eduplicate (excluding generated/vendored/repetitive paths)"
     echo ""
@@ -1438,7 +1471,7 @@ elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     # list is non-empty.
     # Feed the file list via a temp file + xargs (run_tool_filelist), not a bash
     # array on argv — a large tree overflows ARG_MAX otherwise (exit 126).
-    DUP_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$DUP_LIST"
+    DUP_LIST=$(mktemp); inventory_paths_under "$DUP_SUBTREE" "$INV_LIZARD_RE" > "$DUP_LIST"
     DUP_N=$(filelist_count "$DUP_LIST")
     if [ "$DUP_N" -gt "$CHECKUP_LIZARD_MAX_FILES" ]; then
         # Single-pass clone detection holds every file's tokens in memory; on a
@@ -1460,7 +1493,7 @@ elif [ "$DETECT_ENGINE_DUPLICATION" = "lizard" ]; then
     else
         # Parse lizard's text report: each "Duplicate block:" lists the cloned
         # locations as `file:start ~ end`; the footer gives the overall rate.
-        DUP_PARSED=$(python3 - "$LAST_RAW" "$TARGET" <<'PY' || echo '{"rate":0,"count":0,"top":[]}'
+        DUP_PARSED=$(python3 - "$LAST_RAW" "$PWD" <<'PY' || echo '{"rate":0,"count":0,"top":[]}'
 import sys, json, re
 path, target = sys.argv[1], sys.argv[2]
 text = open(path, errors="replace").read()
@@ -1518,9 +1551,12 @@ PY
     fi
     fi   # end CHECKUP_LIZARD_MAX_FILES cap guard
 else
-    echo -e "${BLUE}ℹ️  Skipped — $DUP_REASON${NC}"
-    write_skipped "duplication" "$DUP_REASON" "$DUP_INTENT"
+    echo -e "${BLUE}ℹ️  Skipped — $DUP_REASON_R${NC}"
+    write_skipped "duplication" "$DUP_REASON_R" "$DUP_INTENT"
 fi
+
+cd "$_RECOVER_CWD"; SLUG_NS=""
+done
 echo ""
 
 # ─── Topology recover pass (#78) — project-built cluster C (per-package code health) ─
