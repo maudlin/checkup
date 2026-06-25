@@ -212,10 +212,14 @@ dependency-health (`npm-audit`, `deps-freshness`, `circular-deps`), correctness/
 `unused-code` + `coverage` clusters (Phase 2/2b increment 1), plus the
 scc-measured **`codebase-stats`** — re-aggregated per sub-package by slicing the
 *one* cached `scc --by-file` walk to each root's subtree (`scc_keep_for_root`;
-reuse, never re-walk), so no extra scc cost — and **`duplication`**, whose engine
-is re-routed per child (jscpd *in* each node package; lizard over the inventory
-sliced to the subtree via `inventory_paths_under`) (Phase 2b). Still root-scoped:
-the engine-routed `complexity` (eslint / lizard / scc merge), the remaining slice.
+reuse, never re-walk), so no extra scc cost; **`duplication`**, whose engine is
+re-routed per child (jscpd *in* each node package; lizard over the inventory
+sliced to the subtree via `inventory_paths_under`); and **`complexity`**, whose
+full ladder re-routes per child (`route_complexity_child`: ESLint on the JS/TS
+slice using the child's *own* flat config, lizard on the non-JS slice, scc
+fallback), with the single git-hotspots CSV accumulated across packages in
+TARGET-relative paths so churn × complexity stays whole-tree (Phase 2b). With
+those, every measurement arm now recovers per sub-package — #78 is complete.
 Honesty survives recovery: a
 sub-package whose toolchain can't run still `skip`s with a reason (never
 green-by-default), the floor laid in #85.
