@@ -228,6 +228,21 @@ assert_eq "override:git scope → .gitignore" ".gitignore"             "$(SOURCE
 assert_eq "find scope → builtin excludes"  "builtin excludes (no VCS)" "$(SOURCE_SCOPE=find inventory_exclusion_source)"
 
 echo ""
+echo "inventory_paths_under: per-subtree slice, CWD-relative (#78 increment 3)"
+SOURCE_LST="$TMP/under.lst"
+printf 'api/src/a.ts\0api/src/b.js\0api/README.md\0web/app.ts\0top.ts\0' > "$SOURCE_LST"
+under() { inventory_paths_under "$@" | tr '\0' '\n' | sort | paste -sd',' -; }
+assert_eq "root '.' is the identity (whole inventory, TARGET-relative)" \
+    "api/README.md,api/src/a.ts,api/src/b.js,top.ts,web/app.ts" "$(under .)"
+assert_eq "child slice strips the '<root>/' prefix (CWD-relative)" \
+    "README.md,src/a.ts,src/b.js" "$(under api)"
+assert_eq "child slice + extension filter" \
+    "src/a.ts" "$(under api '\.ts$')"
+assert_eq "'.' identity + extension filter matches inventory_paths" \
+    "$(inventory_paths '\.ts$' | tr '\0' '\n' | sort | paste -sd',' -)" "$(under . '\.ts$')"
+assert_eq "no-match subtree → empty" "" "$(under nope)"
+
+echo ""
 echo "eslint_flat_config_root: gates the ESLint complexity slice (#79)"
 CFG="$TMP/cfgprobe"; mkdir -p "$CFG/pkg"
 assert_eq "no config → empty + rc1" "MISS" "$( eslint_flat_config_root "$CFG" || echo MISS )"

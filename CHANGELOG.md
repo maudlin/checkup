@@ -85,10 +85,12 @@ across the whole thing, honestly*.
   paths re-prefixed so the by-file/focus join stays coherent (Phase 2). The
   scc-measured **codebase statistics** recover too: each sub-package's totals are
   re-aggregated from the *one* cached `scc --by-file` walk, sliced to its subtree
-  (reuse, never re-walk), labelled per package (`api/codebase-stats`) — Phase 2b,
-  first increment. A single package / declared workspace is unchanged
-  (byte-identical). Declared workspaces (npm/pnpm/yarn/nx/turbo/lerna) are healthy
-  and don't alarm.
+  (reuse, never re-walk), labelled per package (`api/codebase-stats`). **Code
+  duplication** recovers with its engine re-routed per sub-package — jscpd *in*
+  each node package (npm), lizard over the inventory file list sliced to the
+  subtree — labelled (`svc/duplication`). (Phase 2b.) A single package / declared
+  workspace is unchanged (byte-identical). Declared workspaces
+  (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
 - **`lizard`** as a true multi-language complexity + duplication engine, and a
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /
