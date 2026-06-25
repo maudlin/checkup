@@ -1860,6 +1860,53 @@ echo ""
 #             Reporter thresholds (CCN 10, cognitive 15) are intentionally
 #             LOWER than typical gating thresholds in a project's ESLint
 #             config, so this surfaces hotspots without blocking the build.
+# route_complexity_child <root> — re-derive the complexity engine routing for the
+# sub-package the recover loop has cd'd into (#78). A scoped mirror of the
+# whole-tree routing block (search "Complexity routing") above: it probes the
+# child's inventory slice + its OWN eslint flat config / local bin, then runs the
+# same arm-selection ladder. Reassigns the routing globals (DETECT_CPLX_ARM /
+# DETECT_COMPLEXITY_SLICES / ESLINT_INVOKE / ESLINT_SLICE_OK / ESLINT_JSTS_REASON
+# / NODE_SRC_PROBE) — safe, because detection.json is already written and the "."
+# iteration never calls this (it keeps the whole-tree globals → byte-identical).
+route_complexity_child() {
+    local root="$1" lizard_probe nonjs_probe primary="" node_dom=false
+    NODE_SRC_PROBE=$(inventory_paths_under "$root" "$INV_JSTS_RE" | head -c1)
+    lizard_probe=$(inventory_paths_under "$root" "$INV_LIZARD_RE" | head -c1)
+    nonjs_probe=$(inventory_paths_under "$root" "$INV_NONJS_RE" | head -c1)
+    # node-dominant in this subtree? own package.json + JS/TS the scc-dominant
+    # language (read from the one cached walk, sliced) — or no scc read → manifest.
+    if [ "${SCC_BYFILE_OK:-false}" = true ]; then
+        primary=$(scc_breakdown "$(scc_keep_for_root "$root")" < "$SCC_BYFILE" \
+            | jq -c -f "$CHECKUP_HOME/lib/detect-stacks.jq" 2>/dev/null | jq -r '.[0].stack // ""' 2>/dev/null)
+    fi
+    { [ -f package.json ] && { [ "$primary" = "node" ] || [ -z "$primary" ]; }; } && node_dom=true
+    # The child's OWN eslint flat config + local bin (cwd is the child).
+    ESLINT_CONFIG=$(eslint_flat_config_root "." || true)
+    ESLINT_LOCAL_BIN=""; [ -x "node_modules/.bin/eslint" ] && ESLINT_LOCAL_BIN="node_modules/.bin/eslint"
+    ESLINT_INVOKE=(); ESLINT_SLICE_OK=false; ESLINT_JSTS_REASON=""
+    if [ -n "$NODE_SRC_PROBE" ]; then
+        if [ -z "$ESLINT_CONFIG" ]; then ESLINT_JSTS_REASON="no resolvable root ESLint config"
+        elif [ -n "$ESLINT_LOCAL_BIN" ]; then ESLINT_INVOKE=("$ESLINT_LOCAL_BIN"); ESLINT_SLICE_OK=true
+        elif [ "$CHECKUP_MODE" = "tailored" ] && command -v npx > /dev/null 2>&1; then ESLINT_INVOKE=(npx eslint); ESLINT_SLICE_OK=true
+        else ESLINT_JSTS_REASON="ESLint not installed (not fetched over the network in audit mode)"; fi
+    fi
+    # Arm-selection ladder (scoped mirror of the whole-tree routing).
+    DETECT_COMPLEXITY_SLICES=""
+    if [ "$node_dom" = true ] && [ -n "$NODE_SRC_PROBE" ]; then
+        DETECT_CPLX_ARM="merged"
+        [ "$ESLINT_SLICE_OK" = true ] && DETECT_COMPLEXITY_SLICES="eslint"
+        { [ -n "$LIZARD_BIN" ] && [ -n "$nonjs_probe" ]; } && DETECT_COMPLEXITY_SLICES="${DETECT_COMPLEXITY_SLICES:+$DETECT_COMPLEXITY_SLICES }lizard"
+    elif [ -n "$LIZARD_BIN" ] && [ -n "$lizard_probe" ]; then
+        if [ "$ESLINT_SLICE_OK" = true ]; then
+            DETECT_CPLX_ARM="merged"; DETECT_COMPLEXITY_SLICES="eslint"
+            [ -n "$nonjs_probe" ] && DETECT_COMPLEXITY_SLICES="eslint lizard"
+        else
+            DETECT_CPLX_ARM="lizard"; DETECT_COMPLEXITY_SLICES="lizard"
+        fi
+    elif [ -n "$SCC_BIN" ]; then DETECT_CPLX_ARM="scc"
+    else DETECT_CPLX_ARM="none"; fi
+}
+
 print_section "Complexity Hotspots"
 echo "Command: complexity engine auto-selected by language (ESLint → lizard → scc)"
 echo ""
@@ -1899,6 +1946,23 @@ COMPLEXITY_MERGED_INTENT=$(jq -n '{
 CPLX_SCC="$SCC_BIN"
 CPLX_LIZARD="$LIZARD_BIN"
 CPLX_ROOTS=("${SCAN_ROOTS[@]}")
+
+# Per-package recovery (#78): complexity is engine-routed (eslint/lizard/scc). On
+# an undeclared fan-out, measure EACH assessment root with its OWN engine, scoped
+# to the subtree, and emit a per-package record. The single git-hotspots CSV is
+# accumulated across packages — truncated ONCE here, appended per arm, always with
+# TARGET-relative (namespaced) paths so the churn × complexity join stays
+# whole-tree. Single package / declared workspace → one iteration at "." reusing
+# the whole-tree routing, no cd, SLUG_NS empty → byte-identical to before (gate).
+: > "$OUT_DIR/complexity-full.csv"
+for TOPO_ROOT in "${TOPO_ASSESSMENT_ROOTS[@]}"; do
+_RECOVER_CWD="$PWD"; SLUG_NS=""; CPLX_NS=""; CPLX_ESLINT_ROOTS=("${CPLX_ROOTS[@]}")
+if [ "$TOPO_ROOT" != "." ]; then
+    cd "$TARGET/$TOPO_ROOT" 2>/dev/null || { cd "$_RECOVER_CWD"; continue; }
+    SLUG_NS="$TOPO_ROOT"; CPLX_NS="$TOPO_ROOT"; CPLX_ESLINT_ROOTS=(".")
+    echo -e "${BLUE}📦 Sub-package: $TOPO_ROOT${NC}"
+    route_complexity_child "$TOPO_ROOT"
+fi
 
 if [ "$DETECT_CPLX_ARM" = "merged" ]; then
     # Per-language slice routing (#68/#79). ESLint measures the JS/TS slice
@@ -1944,7 +2008,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
             --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
             --format json --no-warn-ignored \
-            "${SCAN_ROOTS[@]}"
+            "${CPLX_ESLINT_ROOTS[@]}"
         ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
 
         # Graceful degrade (#75): a whole-tree scan can include files whose flat
@@ -1956,14 +2020,14 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
             run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
                 --rule '{"complexity":["warn",10]}' \
                 --format json --no-warn-ignored \
-                "${SCAN_ROOTS[@]}"
+                "${CPLX_ESLINT_ROOTS[@]}"
             ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
         fi
 
         if is_valid_json "$ESLINT_RAW"; then
             # Normalise to TARGET-relative paths; filter test/build paths at the
             # JSON layer (tests legitimately branch more; dist/build is generated).
-            ESLINT_FINDINGS=$(jq --arg root "$TARGET" '
+            ESLINT_FINDINGS=$(jq --arg root "$PWD" --arg ns "$CPLX_NS" '
                 [ .[]
                   | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
                   | .filePath as $fp
@@ -1971,7 +2035,8 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
                   | select(.ruleId == "complexity" or .ruleId == "sonarjs/cognitive-complexity")
                   | (.message | capture("(?:complexity of |Complexity from )(?<n>\\d+)").n | tonumber) as $ccn
                   | ((.message | capture("'\''(?<name>[^'\'']+)'\''").name) // "(anonymous)") as $fname
-                  | ($fp | sub("^" + $root + "/"; "")) as $rel
+                  | ($fp | sub("^" + $root + "/"; "")) as $rel0
+                  | (if $ns == "" then $rel0 else $ns + "/" + $rel0 end) as $rel
                   | (if .ruleId == "sonarjs/cognitive-complexity" then "COG" else "CCN" end) as $kind
                   | {
                       file: $rel,
@@ -2006,13 +2071,15 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
     LIZARD_FINDINGS='[]'; LIZARD_RAN=false
     if [ "$RUN_LIZARD_SLICE" = true ]; then
         # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
-        NONJS_LIST=$(mktemp); inventory_paths "$INV_NONJS_RE" > "$NONJS_LIST"
+        NONJS_LIST=$(mktemp)
+        if [ -n "$CPLX_NS" ]; then inventory_paths_under "$TOPO_ROOT" "$INV_NONJS_RE" > "$NONJS_LIST"
+        else inventory_paths "$INV_NONJS_RE" > "$NONJS_LIST"; fi
         run_tool_filelist "Complexity (lizard)" "$NONJS_LIST" "$CPLX_LIZARD" --csv --CCN 9999
         rm -f "$NONJS_LIST"
         if [ ! -s "$LAST_RAW" ]; then
             echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT)${NC}"
         else
-            LIZARD_FINDINGS=$(jq -R -s --arg root "$TARGET" '
+            LIZARD_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" '
                 def unq: gsub("^\"|\"$"; "");
                 [ split("\n")[]
                   | select(length > 0)
@@ -2025,7 +2092,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
                   | select($ccn >= 10)
                   | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
                   | {
-                      file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
+                      file: (($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")) | (if $ns == "" then . else $ns + "/" + . end)),
                       line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
                       ccn: $ccn,
                       code: ("CCN-" + ($ccn | tostring)),
@@ -2070,7 +2137,6 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         TOTAL_COUNT=$(echo "$CPLX_MERGED" | jq '.count')
 
         mkdir -p "$OUT_DIR"
-        : > "$OUT_DIR/complexity-full.csv"
 
         if [ "$TOTAL_COUNT" -eq 0 ]; then
             echo -e "${GREEN}✅ No functions over CCN 10 / cognitive 15${NC}"
@@ -2096,7 +2162,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
                 if [ "$RUN_LIZARD_SLICE" = true ]; then
                     echo "$LIZARD_FINDINGS" | jq -r --arg prefix lizard -f "$CHECKUP_HOME/lib/complexity-csv.jq"
                 fi
-            } > "$OUT_DIR/complexity-full.csv"
+            } >> "$OUT_DIR/complexity-full.csv"
 
             write_parsed "complexity" "$STATUS" "$TOTAL_COUNT" \
                 "$TOTAL_COUNT hotspots over CCN 10 / cognitive 15 (top 20 reported, highest score $HIGHEST_CCN)${CPLX_SUFFIX}" \
@@ -2119,7 +2185,9 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
     # Fed the VCS-tracked file list (#75) — lizard doesn't honour .gitignore.
     # Gated on LIZARD_PROBE (same inventory), so the list is non-empty.
     # File list via temp file + xargs (run_tool_filelist) — argv-overflow safe.
-    CPLX_LIST=$(mktemp); inventory_paths "$INV_LIZARD_RE" > "$CPLX_LIST"
+    CPLX_LIST=$(mktemp)
+    if [ -n "$CPLX_NS" ]; then inventory_paths_under "$TOPO_ROOT" "$INV_LIZARD_RE" > "$CPLX_LIST"
+    else inventory_paths "$INV_LIZARD_RE" > "$CPLX_LIST"; fi
     run_tool_filelist "Complexity (lizard)" "$CPLX_LIST" "$CPLX_LIZARD" --csv --CCN 9999
     rm -f "$CPLX_LIST"
 
@@ -2135,13 +2203,21 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
         # paths are TARGET-relative and share one namespace with the churn join
         # and the file-based scanners. Written unconditionally (even with zero
         # reportable hotspots) so git-hotspots sees every file's max CCN.
-        sed 's#"\./#"#g' "$LAST_RAW" > "$OUT_DIR/complexity-full.csv"
+        if [ -n "$CPLX_NS" ]; then
+            # Namespace the file column (col 7, before the comma-bearing col 9) to
+            # TARGET-relative so the whole-tree git-hotspots join stays coherent.
+            sed 's#"\./#"#g' "$LAST_RAW" \
+                | awk -F',' -v ns="$CPLX_NS/" 'BEGIN{OFS=","} { if ($7 ~ /^"/) sub(/^"/, "\"" ns, $7); print }' \
+                >> "$OUT_DIR/complexity-full.csv"
+        else
+            sed 's#"\./#"#g' "$LAST_RAW" >> "$OUT_DIR/complexity-full.csv"
+        fi
 
         # Parse the CSV. Fields 2 (CCN), 6 (location), 7 (file) and 8 (function)
         # all precede column 9 (long_name), the only field that can contain
         # commas — so a plain comma split reads them reliably. The start line
         # comes from the location field ("name@start-end@file"), also pre-col-9.
-        ALL_FINDINGS=$(jq -R -s --arg root "$TARGET" '
+        ALL_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" '
             def unq: gsub("^\"|\"$"; "");
             [ split("\n")[]
               | select(length > 0)
@@ -2154,7 +2230,7 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
               | select($ccn >= 10)
               | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
               | {
-                  file: ($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")),
+                  file: (($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")) | (if $ns == "" then . else $ns + "/" + . end)),
                   line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
                   ccn: $ccn,
                   code: ("CCN-" + ($ccn | tostring)),
@@ -2208,15 +2284,16 @@ elif [ "$DETECT_CPLX_ARM" = "scc" ]; then
         echo -e "${YELLOW}⚠️  scc produced unparseable JSON${NC}"
         write_failed "complexity" "scc produced no usable --by-file JSON" "$SCC_CPLX_INTENT"
     else
-        CPLX_FINDINGS=$(scc_perfile_findings "$SCC_KEEP_JSON" < "$SCC_BYFILE")
+        CPLX_FINDINGS=$(scc_perfile_findings "$(scc_keep_for_root "$TOPO_ROOT")" < "$SCC_BYFILE")
 
         mkdir -p "$OUT_DIR"
-        : > "$OUT_DIR/complexity-full.csv"
         # Tornhill-compatible CSV: col 2 = complexity, col 7 = file (git-hotspots
-        # reads only those). Same layout the ESLint path emits.
+        # reads only those). Same layout the ESLint path emits. Paths are
+        # TARGET-relative (the keep-set is sliced per package, never stripped), so
+        # appended rows stay whole-tree-coherent across the recover loop.
         echo "$CPLX_FINDINGS" | jq -r '
             .[] | [0, .ccn, 0, 0, 0, ("scc:" + .file), .file, (.file | sub(".*/"; "")), "", 1, 1] | @csv
-        ' > "$OUT_DIR/complexity-full.csv"
+        ' >> "$OUT_DIR/complexity-full.csv"
 
         REPORTED=$(echo "$CPLX_FINDINGS" | jq '[.[] | select(.ccn >= 25)]')
         TOTAL_COUNT=$(echo "$REPORTED" | jq 'length')
@@ -2244,6 +2321,13 @@ else
     echo -e "${YELLOW}⚠️  $CPLX_REASON${NC}"
     write_skipped "complexity" "$CPLX_REASON" "$COMPLEXITY_INTENT"
 fi
+
+cd "$_RECOVER_CWD"; SLUG_NS=""
+done
+# Truncated once before the loop; if no arm measured anything across any package
+# it's empty — drop it so the "absent" state matches the pre-#78 single-package
+# behaviour exactly (git-hotspots treats absent and empty identically anyway).
+[ -s "$OUT_DIR/complexity-full.csv" ] || rm -f "$OUT_DIR/complexity-full.csv"
 echo ""
 
 # 14. Mutation Testing (Optional - slow)

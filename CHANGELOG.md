@@ -88,9 +88,14 @@ across the whole thing, honestly*.
   (reuse, never re-walk), labelled per package (`api/codebase-stats`). **Code
   duplication** recovers with its engine re-routed per sub-package — jscpd *in*
   each node package (npm), lizard over the inventory file list sliced to the
-  subtree — labelled (`svc/duplication`). (Phase 2b.) A single package / declared
-  workspace is unchanged (byte-identical). Declared workspaces
-  (npm/pnpm/yarn/nx/turbo/lerna) are healthy and don't alarm.
+  subtree — labelled (`svc/duplication`). And **complexity** recovers with its
+  full engine ladder re-routed per child (ESLint on the JS/TS slice using the
+  child's *own* flat config, lizard on the non-JS slice, scc fallback), merged
+  and labelled (`backend/complexity`); the single git-hotspots CSV is accumulated
+  across packages with TARGET-relative paths so churn × complexity stays
+  whole-tree. (Phase 2b — completing #78.) A single package / declared workspace
+  is unchanged (byte-identical). Declared workspaces (npm/pnpm/yarn/nx/turbo/lerna)
+  are healthy and don't alarm.
 - **`lizard`** as a true multi-language complexity + duplication engine, and a
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /
