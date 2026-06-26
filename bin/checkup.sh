@@ -421,6 +421,21 @@ else
     DETECT_ENGINE_DUPLICATION="none"; DUP_REASON="no Node target for jscpd and no lizard-parseable source"
 fi
 
+# Per-check thresholds (#72): from .checkup.yml `thresholds:` (or a CHECKUP_* env
+# var), each defaulting to the historical literal so a no-override run is
+# byte-identical. Tunes only the warn/fail banding the complexity (CCN arms) and
+# duplication sections already apply — never scoring (ADR-0009). _cfg_int guards a
+# hand-set non-integer from reaching jq / `[ -lt ]`. (scc's heuristic complexity
+# band is a different scale and keeps its own cutoffs.)
+CPLX_CCN_WARN=$(_cfg_int "${CHECKUP_CPLX_CCN_WARN:-}" 10)
+CPLX_CCN_FAIL=$(_cfg_int "${CHECKUP_CPLX_CCN_FAIL:-}" 30)
+DUP_WARN_PCT=$(_cfg_int "${CHECKUP_DUP_WARN_PCT:-}" 3)
+DUP_FAIL_PCT=$(_cfg_int "${CHECKUP_DUP_FAIL_PCT:-}" 5)
+# The ESLint complexity warn level, built so the default (10) renders the exact
+# historical --rule JSON (byte-identical). Cognitive stays 15 (not yet tunable).
+CPLX_ESLINT_RULE=$(jq -nc --argjson w "$CPLX_CCN_WARN" '{complexity:["warn",$w],"sonarjs/cognitive-complexity":["warn",15]}')
+CPLX_ESLINT_RULE_CYC=$(jq -nc --argjson w "$CPLX_CCN_WARN" '{complexity:["warn",$w]}')
+
 # Primary stack + confidence (drives absence-is-signal framing, #51): the largest
 # scc stack that also has a manifest is a HIGH-confidence "we looked the right way
 # for this stack"; manifest-or-dominant-only is medium; neither is low. Empty when
@@ -1443,11 +1458,11 @@ if [ "$DUP_ENGINE" = "jscpd" ]; then
             | .[0:10]
         ' reports/jscpd/jscpd-report.json)
 
-        if [ "$DUPLICATION_INT" -lt 3 ]; then
+        if [ "$DUPLICATION_INT" -lt "$DUP_WARN_PCT" ]; then
             echo -e "${GREEN}✅ Low code duplication: ${DUPLICATION_PCT}% (5/5)${NC}"
             HEALTH_SCORE=$((HEALTH_SCORE + 5))
             JSCPD_STATUS="pass"
-        elif [ "$DUPLICATION_INT" -lt 5 ]; then
+        elif [ "$DUPLICATION_INT" -lt "$DUP_FAIL_PCT" ]; then
             echo -e "${YELLOW}⚠️  Moderate code duplication: ${DUPLICATION_PCT}% (3/5)${NC}"
             HEALTH_SCORE=$((HEALTH_SCORE + 3))
             echo "   Review reports/jscpd/jscpd-report.json for details"
@@ -1535,11 +1550,11 @@ PY
         DUP_RATE_INT=$(echo "$DUP_RATE" | awk '{print int($1)}')
         DUP_COUNT=$(echo "$DUP_PARSED" | jq -r '.count')
         DUP_TOP=$(echo "$DUP_PARSED" | jq -c '.top')
-        if [ "$DUP_RATE_INT" -lt 3 ]; then
+        if [ "$DUP_RATE_INT" -lt "$DUP_WARN_PCT" ]; then
             echo -e "${GREEN}✅ Low code duplication: ${DUP_RATE}% (5/5)${NC}"
             HEALTH_SCORE=$((HEALTH_SCORE + 5))
             DUP_STATUS="pass"
-        elif [ "$DUP_RATE_INT" -lt 5 ]; then
+        elif [ "$DUP_RATE_INT" -lt "$DUP_FAIL_PCT" ]; then
             echo -e "${YELLOW}⚠️  Moderate code duplication: ${DUP_RATE}% ($DUP_COUNT clone blocks, 3/5)${NC}"
             HEALTH_SCORE=$((HEALTH_SCORE + 3))
             DUP_STATUS="warn"
@@ -2006,7 +2021,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
     ESLINT_FINDINGS='[]'; ESLINT_RAN=false
     if [ "$RUN_ESLINT_SLICE" = true ]; then
         run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
-            --rule '{"complexity":["warn",10],"sonarjs/cognitive-complexity":["warn",15]}' \
+            --rule "$CPLX_ESLINT_RULE" \
             --format json --no-warn-ignored \
             "${CPLX_ESLINT_ROOTS[@]}"
         ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
@@ -2018,7 +2033,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         # this run (JS/TS-only metric, best-effort).
         if ! is_valid_json "$ESLINT_RAW"; then
             run_tool "Complexity Hotspots" "${ESLINT_INVOKE[@]}" \
-                --rule '{"complexity":["warn",10]}' \
+                --rule "$CPLX_ESLINT_RULE_CYC" \
                 --format json --no-warn-ignored \
                 "${CPLX_ESLINT_ROOTS[@]}"
             ESLINT_RAW="$LAST_RAW"; ESLINT_EXIT="$LAST_EXIT"
@@ -2027,7 +2042,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         if is_valid_json "$ESLINT_RAW"; then
             # Normalise to TARGET-relative paths; filter test/build paths at the
             # JSON layer (tests legitimately branch more; dist/build is generated).
-            ESLINT_FINDINGS=$(jq --arg root "$PWD" --arg ns "$CPLX_NS" '
+            ESLINT_FINDINGS=$(jq --arg root "$PWD" --arg ns "$CPLX_NS" --argjson fail "$CPLX_CCN_FAIL" '
                 [ .[]
                   | select(.filePath | test("\\.test\\.ts$|\\.spec\\.ts$|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
                   | .filePath as $fp
@@ -2043,7 +2058,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
                       line: .line,
                       ccn: $ccn,
                       code: ($kind + "-" + ($ccn | tostring)),
-                      severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                      severity: (if $ccn >= $fail then "error" elif $ccn >= 20 then "warning" else "low" end),
                       message: ($fname + " — " + (if $kind == "COG" then "cognitive complexity " else "CCN " end) + ($ccn | tostring))
                     }
                 ]
@@ -2079,7 +2094,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         if [ ! -s "$LAST_RAW" ]; then
             echo -e "${YELLOW}⚠️  lizard produced no output on the non-JS slice (exit $LAST_EXIT)${NC}"
         else
-            LIZARD_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" '
+            LIZARD_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" --argjson warn "$CPLX_CCN_WARN" --argjson fail "$CPLX_CCN_FAIL" '
                 def unq: gsub("^\"|\"$"; "");
                 [ split("\n")[]
                   | select(length > 0)
@@ -2089,14 +2104,14 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
                   | ($f[5] | unq) as $loc
                   | ($f[6] | unq) as $file
                   | ($f[7] | unq) as $fname
-                  | select($ccn >= 10)
+                  | select($ccn >= $warn)
                   | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
                   | {
                       file: (($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")) | (if $ns == "" then . else $ns + "/" + . end)),
                       line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
                       ccn: $ccn,
                       code: ("CCN-" + ($ccn | tostring)),
-                      severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                      severity: (if $ccn >= $fail then "error" elif $ccn >= 20 then "warning" else "low" end),
                       message: ($fname + " — CCN " + ($ccn | tostring))
                     }
                 ]
@@ -2133,7 +2148,7 @@ if [ "$DETECT_CPLX_ARM" = "merged" ]; then
         # non-JS findings array exceeds the 128 KB per-argv cap and jq would die
         # "Argument list too long" on a big polyglot like a Java monorepo (#79).
         ALL_FINDINGS=$(jq -s 'add' <(printf '%s' "$ESLINT_FINDINGS") <(printf '%s' "$LIZARD_FINDINGS"))
-        CPLX_MERGED=$(echo "$ALL_FINDINGS" | jq -f "$CHECKUP_HOME/lib/complexity-merge.jq")
+        CPLX_MERGED=$(echo "$ALL_FINDINGS" | jq --argjson fail "$CPLX_CCN_FAIL" -f "$CHECKUP_HOME/lib/complexity-merge.jq")
         TOTAL_COUNT=$(echo "$CPLX_MERGED" | jq '.count')
 
         mkdir -p "$OUT_DIR"
@@ -2217,7 +2232,7 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
         # all precede column 9 (long_name), the only field that can contain
         # commas — so a plain comma split reads them reliably. The start line
         # comes from the location field ("name@start-end@file"), also pre-col-9.
-        ALL_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" '
+        ALL_FINDINGS=$(jq -R -s --arg root "$PWD" --arg ns "$CPLX_NS" --argjson warn "$CPLX_CCN_WARN" --argjson fail "$CPLX_CCN_FAIL" '
             def unq: gsub("^\"|\"$"; "");
             [ split("\n")[]
               | select(length > 0)
@@ -2227,14 +2242,14 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
               | ($f[5] | unq) as $loc
               | ($f[6] | unq) as $file
               | ($f[7] | unq) as $fname
-              | select($ccn >= 10)
+              | select($ccn >= $warn)
               | select($file | test("\\.test\\.|\\.spec\\.|/__tests__/|/dist/|/build/|/\\.svelte-kit/") | not)
               | {
                   file: (($file | sub("^" + $root + "/"; "") | sub("^\\./"; "")) | (if $ns == "" then . else $ns + "/" + . end)),
                   line: (($loc | capture("@(?<s>[0-9]+)-").s | tonumber) // 1),
                   ccn: $ccn,
                   code: ("CCN-" + ($ccn | tostring)),
-                  severity: (if $ccn >= 30 then "error" elif $ccn >= 20 then "warning" else "low" end),
+                  severity: (if $ccn >= $fail then "error" elif $ccn >= 20 then "warning" else "low" end),
                   message: ($fname + " — CCN " + ($ccn | tostring))
                 }
             ]
@@ -2250,7 +2265,7 @@ elif [ "$DETECT_CPLX_ARM" = "lizard" ]; then
             HIGHEST_CCN=$(echo "$ALL_FINDINGS" | jq '[.[].ccn] | max')
 
             STATUS="warn"
-            [ "$HIGHEST_CCN" -ge 30 ] && STATUS="fail"
+            [ "$HIGHEST_CCN" -ge "$CPLX_CCN_FAIL" ] && STATUS="fail"
 
             printf "%-7s %-50s %s\n" "Score" "Function" "Location"
             echo "----------------------------------------------------------------------------------------"

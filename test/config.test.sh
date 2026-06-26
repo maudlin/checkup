@@ -116,6 +116,41 @@ assert_eq "disabled+skipped → honest reason" "disabled in .checkup.yml" "$(jq 
 assert_eq "a check that RAN is untouched"    "clean"                    "$(jq -r '.summary' "$PD/gitleaks.json")"
 
 echo ""
+echo "thresholds: per-check warn/fail banding (#72)"
+TH=$(yml 'thresholds:
+  complexity_ccn_warn: 15
+  complexity_ccn_fail: 25
+  duplication_warn_pct: 4
+  duplication_fail_pct: 8')
+assert_eq "complexity_ccn_warn"  "15"   "$( load_checkup_config "$TH"; printf '%s' "${CHECKUP_CPLX_CCN_WARN:-}" )"
+assert_eq "complexity_ccn_fail"  "25"   "$( load_checkup_config "$TH"; printf '%s' "${CHECKUP_CPLX_CCN_FAIL:-}" )"
+assert_eq "duplication_warn_pct" "4"    "$( load_checkup_config "$TH"; printf '%s' "${CHECKUP_DUP_WARN_PCT:-}" )"
+assert_eq "duplication_fail_pct" "8"    "$( load_checkup_config "$TH"; printf '%s' "${CHECKUP_DUP_FAIL_PCT:-}" )"
+assert_eq "thresholds flip overridden" "true" "$( load_checkup_config "$TH"; printf '%s' "$CHECKUP_OVERRIDDEN" )"
+
+echo ""
+echo "thresholds: non-integer warns + is ignored (default preserved), siblings still parse"
+TG=$(yml 'thresholds:
+  complexity_ccn_warn: abc
+  duplication_fail_pct: 8')
+assert_eq "garbage value → var stays unset" "unset" "$( load_checkup_config "$TG" 2>/dev/null; printf '%s' "${CHECKUP_CPLX_CCN_WARN:-unset}" )"
+assert_eq "sibling valid value still set"    "8"     "$( load_checkup_config "$TG" 2>/dev/null; printf '%s' "${CHECKUP_DUP_FAIL_PCT:-unset}" )"
+assert_eq "garbage emits a warning"          "1"     "$( load_checkup_config "$TG" 2>&1 >/dev/null | grep -c 'must be a non-negative integer' )"
+
+echo ""
+echo "thresholds: unknown key warns + is ignored"
+TU=$(yml 'thresholds:
+  complexity_ccn_budget: 12')
+assert_eq "unknown threshold key warns" "1" "$( load_checkup_config "$TU" 2>&1 >/dev/null | grep -c "unknown key .thresholds.complexity_ccn_budget" )"
+
+echo ""
+echo "_cfg_int: use-site guard (integer in, default on garbage)"
+assert_eq "valid integer passes through" "15" "$(_cfg_int "15" 10)"
+assert_eq "empty → default"              "10" "$(_cfg_int "" 10)"
+assert_eq "non-integer → default"        "30" "$(_cfg_int "10x" 30)"
+assert_eq "negative → default"           "5"  "$(_cfg_int "-2" 5)"
+
+echo ""
 echo ".checkup.yml.example stays in sync with the parser (no unknown keys)"
 EX="$CHECKUP_HOME/.checkup.yml.example"
 if [ -f "$EX" ]; then
