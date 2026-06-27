@@ -61,5 +61,14 @@ commands:
 # Directory globs work (a leading match covers the whole subtree): `vendor/js/*`.
 # exclude: [src/generated/*, "vendor/js/*", "*.pb.go"]
 
-# ── Not yet configurable here ────────────────────────────────────────────────
-# - Per-check thresholds (complexity CCN, duplication %): planned.
+# ── Thresholds ───────────────────────────────────────────────────────────────
+# Tune the warn/fail banding the complexity and duplication sections apply. Each
+# is an integer; omit any to keep the default (shown). These change a check's
+# STATUS only — never the health score (checkup is a localiser, not a gate). The
+# complexity knobs apply to the CCN engines (ESLint, lizard); scc's heuristic
+# band keeps its own scale.
+thresholds:
+  # complexity_ccn_warn: 10    # report functions at/above this cyclomatic CCN
+  # complexity_ccn_fail: 30    # any function at/above this → the record fails
+  # duplication_warn_pct: 3    # duplication % at/above this → warn
+  # duplication_fail_pct: 5    # duplication % at/above this → fail

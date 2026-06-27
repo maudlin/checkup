@@ -398,6 +398,10 @@ checks:
   enable:  [mutation]    # opt in to an off-by-default check
 commands:
   test: "dotnet test"    # override a check's command ("" disables it); or set CHECKUP_CMD_TEST
+thresholds:              # tune warn/fail banding (status only, never the score)
+  complexity_ccn_warn: 10  # report functions at/above this CCN (ESLint + lizard engines)
+  complexity_ccn_fail: 30  # any function at/above this → the complexity record fails
+  duplication_warn_pct: 3  # duplication % at/above this → warn; …_fail_pct → fail
 ```
 
 It's a small YAML subset (inline lists `[a, b]`, `#` comments); `yq` is used if

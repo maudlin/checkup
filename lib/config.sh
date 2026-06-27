@@ -23,6 +23,11 @@
 #                            # the CHECKUP_EXCLUDE env var; reaches every engine
 #                            # (lizard inventory AND scc keep-set, #109). Top-level
 #                            # (not nested). Directory globs work: `vendor/js/*`.
+#   thresholds:              # per-check warn/fail banding (#72) — integers, with
+#     complexity_ccn_warn: 10   #   the historical literals as defaults so an
+#     complexity_ccn_fail: 30   #   absent block is byte-identical. Tunes only the
+#     duplication_warn_pct: 3   #   status the section already applies (NOT scoring,
+#     duplication_fail_pct: 5   #   ADR-0009). Garbage → warn + keep the default.
 #
 # Grammar: `key: value` and one level of `section:`-nested `  key: value`;
 # inline flow lists `[a, b]`; `#` comments; quoted or bare scalars. Block-style
@@ -30,7 +35,8 @@
 #
 # Outputs (consumed by bin/checkup.sh): CHECKUP_FORCE_STACK, CHECKUP_SUPPRESS_STACKS,
 # CHECKUP_DISABLE, CHECKUP_ENABLE, CHECKUP_CMD_* (commands), CHECKUP_EXCLUDE
-# (merged with the env var), CHECKUP_OVERRIDDEN.
+# (merged with the env var), CHECKUP_CPLX_CCN_WARN/FAIL, CHECKUP_DUP_WARN_PCT/FAIL_PCT
+# (thresholds), CHECKUP_OVERRIDDEN.
 
 _cfg_trim()   { printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 _cfg_unquote(){ # strip one layer of matching single/double quotes
@@ -52,6 +58,17 @@ _cfg_list() { # "[a, \"b c\", d]" → "a" / "b c" / "d" newline-separated
 
 # Canonical command keys accepted under `commands:` → CHECKUP_CMD_<UPPER>.
 _cfg_cmd_known=" test build typecheck lint format typeaware deps unused coverage mutation security audit outdated "
+
+# _cfg_int <candidate> <default> — echo <candidate> iff it's a non-negative
+# integer, else <default>. The use-site guard for thresholds (#72): keeps a bad
+# value (from a hand-set env var, or anything the parser let through) from
+# reaching jq / `[ -lt ]` — never abort, never a false pass.
+_cfg_int() {
+    case "$1" in
+        ''|*[!0-9]*) printf '%s' "$2";;
+        *)           printf '%s' "$1";;
+    esac
+}
 
 load_checkup_config() {  # $1 = path to .checkup.yml
     local file="$1"
@@ -113,6 +130,26 @@ _cfg_apply() {  # $1 = section, $2 = key, $3 = raw value
             else
                 echo "⚠️  .checkup.yml: unknown command '$key' — ignoring" >&2
             fi;;
+        thresholds)
+            # Per-check warn/fail banding (#72). Integers only; garbage → warn +
+            # keep the default (the use-site `${VAR:-literal}` supplies it). Export
+            # so the value also reaches jq via `$ARGS.named` / env at the use site.
+            local _tv; _tv="$(_cfg_unquote "$val")"
+            local _tvar=""
+            case "$key" in
+                complexity_ccn_warn)  _tvar=CHECKUP_CPLX_CCN_WARN;;
+                complexity_ccn_fail)  _tvar=CHECKUP_CPLX_CCN_FAIL;;
+                duplication_warn_pct) _tvar=CHECKUP_DUP_WARN_PCT;;
+                duplication_fail_pct) _tvar=CHECKUP_DUP_FAIL_PCT;;
+                *) echo "⚠️  .checkup.yml: unknown key 'thresholds.$key' — ignoring" >&2;;
+            esac
+            if [ -n "$_tvar" ]; then
+                if printf '%s' "$_tv" | grep -Eq '^[0-9]+$'; then
+                    printf -v "$_tvar" '%s' "$_tv"; export "$_tvar"; CHECKUP_OVERRIDDEN=true
+                else
+                    echo "⚠️  .checkup.yml: thresholds.$key must be a non-negative integer (got '$_tv') — ignoring" >&2
+                fi
+            fi;;
         toplevel)
             case "$key" in
                 exclude)
@@ -140,7 +177,8 @@ _cfg_parse_yq() {  # $1 = file
         (.checks.disable   // [] | "checks disable [" + (join(", ")) + "]"),
         (.checks.enable    // [] | "checks enable ["  + (join(", ")) + "]"),
         (.exclude // [] | select(length > 0) | "toplevel exclude [" + (join(", ")) + "]"),
-        (.commands // {} | to_entries[] | "commands " + .key + " " + (.value|tostring))
+        (.commands // {} | to_entries[] | "commands " + .key + " " + (.value|tostring)),
+        (.thresholds // {} | to_entries[] | "thresholds " + .key + " " + (.value|tostring))
     ' "$file" 2>/dev/null) || return 1
     local sec key val
     while read -r sec key val; do

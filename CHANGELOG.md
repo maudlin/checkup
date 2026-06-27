@@ -100,6 +100,13 @@ across the whole thing, honestly*.
   **Focus Areas** view synthesising the forensic axes (#36–#38).
 - **Command profiles** + a **`.checkup.yml`** override layer (stack / checks /
   commands) with a documented example (#6, #69–#71, #2).
+- **Per-check thresholds** in `.checkup.yml` (#72): a `thresholds:` block tunes
+  the complexity (`complexity_ccn_warn` / `_fail`, the CCN engines) and
+  duplication (`duplication_warn_pct` / `_fail_pct`) warn/fail banding — *"our
+  complexity budget is 15, not 10"*. Integers, validated (garbage → warn + keep
+  the default); each defaults to the historical literal so an absent block is
+  byte-identical. Tunes a check's **status only — never the health score**
+  (ADR-0009).
 - Generated/vendored exclusion for the multi-language scans + `CHECKUP_EXCLUDE`
   (#41, #44); evergreen reference docs, ADRs, and `AGENTS.md` (#12–#13, #19).
 

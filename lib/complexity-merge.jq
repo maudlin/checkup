@@ -15,14 +15,15 @@
 # Output: { count, highest, status, top } —
 #   count   : total findings
 #   highest : max score (0 when empty)
-#   status  : pass when empty; fail when any score ≥ 30; warn otherwise
+#   status  : pass when empty; fail when any score ≥ the fail threshold (default
+#             30, override with `--argjson fail N`, #72); warn otherwise
 #   top     : ranked by score desc, capped at 20, with the internal `.ccn` sort
 #             key shed so the public top[] schema stays {file,line,code,severity,message}
 {
   count:   length,
   highest: (([.[].ccn] | max) // 0),
   status:  (if length == 0 then "pass"
-            elif (([.[].ccn] | max) // 0) >= 30 then "fail"
+            elif (([.[].ccn] | max) // 0) >= ($ARGS.named.fail // 30) then "fail"
             else "warn" end),
   top:     (sort_by(-.ccn) | .[0:20] | map(del(.ccn)))
 }
