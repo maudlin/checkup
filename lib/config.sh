@@ -141,6 +141,9 @@ _cfg_apply() {  # $1 = section, $2 = key, $3 = raw value
                 complexity_ccn_fail)  _tvar=CHECKUP_CPLX_CCN_FAIL;;
                 duplication_warn_pct) _tvar=CHECKUP_DUP_WARN_PCT;;
                 duplication_fail_pct) _tvar=CHECKUP_DUP_FAIL_PCT;;
+                ownership_keyperson_pct_warn)   _tvar=CHECKUP_OWNERSHIP_KEYPERSON_PCT;;
+                ownership_sole_author_pct_warn) _tvar=CHECKUP_OWNERSHIP_SOLE_PCT;;
+                ownership_orphan_months)        _tvar=CHECKUP_OWNERSHIP_ORPHAN_MONTHS;;
                 *) echo "⚠️  .checkup.yml: unknown key 'thresholds.$key' — ignoring" >&2;;
             esac
             if [ -n "$_tvar" ]; then
