@@ -128,6 +128,15 @@ assert_eq "duplication_warn_pct" "4"    "$( load_checkup_config "$TH"; printf '%
 assert_eq "duplication_fail_pct" "8"    "$( load_checkup_config "$TH"; printf '%s' "${CHECKUP_DUP_FAIL_PCT:-}" )"
 assert_eq "thresholds flip overridden" "true" "$( load_checkup_config "$TH"; printf '%s' "$CHECKUP_OVERRIDDEN" )"
 
+# Ownership / bus-factor thresholds (ADR-0010, #127)
+TO=$(yml 'thresholds:
+  ownership_keyperson_pct_warn: 60
+  ownership_sole_author_pct_warn: 40
+  ownership_orphan_months: 9')
+assert_eq "ownership_keyperson_pct_warn"   "60" "$( load_checkup_config "$TO"; printf '%s' "${CHECKUP_OWNERSHIP_KEYPERSON_PCT:-}" )"
+assert_eq "ownership_sole_author_pct_warn" "40" "$( load_checkup_config "$TO"; printf '%s' "${CHECKUP_OWNERSHIP_SOLE_PCT:-}" )"
+assert_eq "ownership_orphan_months"        "9"  "$( load_checkup_config "$TO"; printf '%s' "${CHECKUP_OWNERSHIP_ORPHAN_MONTHS:-}" )"
+
 echo ""
 echo "thresholds: non-integer warns + is ignored (default preserved), siblings still parse"
 TG=$(yml 'thresholds:

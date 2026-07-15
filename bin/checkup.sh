@@ -3426,7 +3426,157 @@ else
 fi
 echo ""
 
-# 23. Documentation Presence (absence-is-signal, #51)
+# 23. Knowledge Concentration / Key-Person (bus-factor forensic, ADR-0010, #127)
+# section:    ownership
+# purpose:    The PEOPLE axis of the git forensics. hotspots/coupling/bug-fix
+#             measure the code; this measures WHO holds it — contribution
+#             concentration, the literal bus factor (authors to reach 50%/80%),
+#             sole-authored files, single-owned areas, and orphaned knowledge
+#             (sole-owned code whose only author has gone inactive). Pure git log,
+#             no new tooling. Identity is git's OWN mailmap-resolved %aN/%aE,
+#             coalesced by email — we never guess aliases from initials (ADR-0010).
+# pass_means: No author over the key-person threshold and no majority of
+#             single-author files — knowledge is shared.
+# fail_means: One author dominates, files are single-authored, or sole-owned code
+#             has an inactive owner — a continuity/bus-factor risk. Cross-train or
+#             document. Reported as warn — a focus signal, never a gate.
+# notes:      Reuses the source inventory (generated/vendored already excluded) so
+#             a committed bundle can't crown its committer; commit-touch ownership
+#             is primary (robust to one-off codemods). Shallow clone / thin history
+#             / non-git → honest skip. CHECKUP_OWNERSHIP_ANON=1 anonymises names.
+print_section "Knowledge Concentration (Key-Person / Bus Factor)"
+echo "Command: git log --numstat (mailmap-resolved authorship over the source inventory)"
+echo ""
+
+OWNERSHIP_INTENT=$(jq -n '{
+    purpose:    "Localise key-person dependency from git authorship — where knowledge concentrates in one author (bus factor). Identity is mailmap-resolved and email-coalesced; informational, never gates.",
+    pass_means: "No single author over the concentration threshold and no majority of single-author files — knowledge is shared.",
+    fail_means: "One author dominates, files are single-authored, or sole-owned code has an inactive owner — a continuity/bus-factor risk. Cross-train or document. (Reported as warn, a focus signal.)"
+}')
+
+# Tunable thresholds (#72 / ADR-0010) — env or .checkup.yml thresholds, with the
+# literals as defaults so an absent config is byte-identical. Non-integer env is
+# coerced back to the default (jq --argjson would otherwise abort on garbage).
+OWN_KEYPERSON_PCT="${CHECKUP_OWNERSHIP_KEYPERSON_PCT:-50}"
+OWN_SOLE_PCT="${CHECKUP_OWNERSHIP_SOLE_PCT:-50}"
+OWN_ORPHAN_MONTHS="${CHECKUP_OWNERSHIP_ORPHAN_MONTHS:-6}"
+OWN_AREA_DEPTH="${CHECKUP_OWNERSHIP_AREA_DEPTH:-1}"
+case "$OWN_KEYPERSON_PCT" in ''|*[!0-9]*) OWN_KEYPERSON_PCT=50;; esac
+case "$OWN_SOLE_PCT"      in ''|*[!0-9]*) OWN_SOLE_PCT=50;; esac
+case "$OWN_ORPHAN_MONTHS" in ''|*[!0-9]*) OWN_ORPHAN_MONTHS=6;; esac
+case "$OWN_AREA_DEPTH"    in ''|*[!0-9]*|0) OWN_AREA_DEPTH=1;; esac
+OWN_ORPHAN_DAYS=$(( OWN_ORPHAN_MONTHS * 30 ))
+OWN_ANON="0"; [ -n "${CHECKUP_OWNERSHIP_ANON:-}" ] && [ "${CHECKUP_OWNERSHIP_ANON}" != "0" ] && OWN_ANON="1"
+
+if [ "$GIT_OK" != true ]; then
+    write_skipped "ownership" "not a git repository with history (or git absent) — authorship needs commits" "$OWNERSHIP_INTENT"
+elif [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] || [ -f "$(git rev-parse --git-dir 2>/dev/null)/shallow" ]; then
+    # A truncated history mis-attributes ownership (the real author is beyond the
+    # graft) — skip honestly rather than headline a wrong bus factor (ADR-0003/0010).
+    echo -e "${BLUE}ℹ️  Shallow clone — authorship history is truncated${NC}"
+    write_skipped "ownership" "shallow clone — authorship history is truncated; ownership/bus-factor would be misattributed. Fetch full history (git fetch --unshallow) to enable" "$OWNERSHIP_INTENT"
+else
+    OWN_NOW=$(date +%s)
+
+    # Optional analysis window. Ownership is CUMULATIVE — the default is
+    # all-history (who has ever held this code); a window narrows to recent tenure.
+    OWN_SINCE_ARGS=()
+    [ -n "${CHECKUP_OWNERSHIP_SINCE:-}" ] && OWN_SINCE_ARGS=(--since="${CHECKUP_OWNERSHIP_SINCE}")
+
+    # The current source inventory (tracked; generated/vendored already excluded)
+    # is the allow-list: only files that still exist AND count as source get
+    # authorship, so a deleted file or a committed bundle can't skew the numbers.
+    OWN_KEEP=$(inventory_paths "" | tr '\0' '\n' | grep -v '^$' || true)
+
+    # One git-log pass: mailmap-resolved author (%aN/%aE) + timestamp per commit,
+    # then --numstat lines per file. A printable "@@CU@@"-prefixed, tab-delimited
+    # header row distinguishes commit rows from numstat rows (control-byte regex is
+    # not portable across awk implementations); numstat paths never start with it.
+    # --no-merges so a merge commit doesn't double-count its files' authorship.
+    OWNERSHIP_ROWS=$(git log --no-merges "${OWN_SINCE_ARGS[@]}" \
+        --pretty=format:'@@CU@@%x09%aE%x09%aN%x09%at' --numstat \
+        -- "${SCAN_ROOTS[@]}" 2>/dev/null \
+        | awk -F'\t' -v keeplist="$OWN_KEEP" -v gitprefix="$GIT_PREFIX" '
+            function strip(p) { return (gitprefix != "" && index(p, gitprefix) == 1) ? substr(p, length(gitprefix) + 1) : p }
+            function newpath(p) {
+                # git numstat rename notations → the NEW path
+                if (p ~ /\{.* => .*\}/) { gsub(/\{[^}]* => /, "", p); gsub(/\}/, "", p); gsub(/\/\//, "/", p); return p }
+                if (p ~ / => /)         { sub(/^.* => /, "", p); return p }
+                return p
+            }
+            BEGIN { n = split(keeplist, ka, "\n"); for (i = 1; i <= n; i++) if (ka[i] != "") keep[ka[i]] = 1 }
+            $1 == "@@CU@@" { email = $2; name = $3; ts = $4 + 0; next }
+            $1 == "-"      { next }                    # binary file (added shown as -)
+            NF >= 3 {
+                path = newpath(strip($3))
+                if (!(path in keep)) next
+                key = path SUBSEP email
+                cnt[key]++
+                add[key] += ($1 + 0)
+                if (ts > tsm[key]) { tsm[key] = ts; nm[key] = name }
+            }
+            END {
+                for (k in cnt) {
+                    split(k, a, SUBSEP)
+                    printf "%s\t%s\t%s\t%d\t%d\t%d\n", a[1], a[2], nm[k], cnt[k], add[k], tsm[k]
+                }
+            }
+        ')
+
+    OWN_FILE_COUNT=$(printf '%s\n' "$OWNERSHIP_ROWS" | grep -v '^$' | cut -f1 | sort -u | wc -l | tr -d ' ')
+
+    if [ -z "$OWNERSHIP_ROWS" ]; then
+        echo -e "${BLUE}ℹ️  No attributable source commits — ownership can't be computed${NC}"
+        write_skipped "ownership" \
+            "no authored source history in the inventory (window/roots produced no attributable commits) — widen CHECKUP_OWNERSHIP_SINCE or check CHECKUP_SRC_ROOTS" \
+            "$OWNERSHIP_INTENT"
+    elif [ "$OWN_FILE_COUNT" -lt 5 ]; then
+        echo -e "${BLUE}ℹ️  Only $OWN_FILE_COUNT tracked file(s) with authorship — too little to localise${NC}"
+        write_skipped "ownership" \
+            "only $OWN_FILE_COUNT tracked file(s) with authorship — history too thin to localise ownership" \
+            "$OWNERSHIP_INTENT"
+    else
+        OWN_HAS_MAILMAP=0; [ -f "$TARGET/.mailmap" ] && OWN_HAS_MAILMAP=1
+
+        OWNERSHIP_JSON=$(printf '%s\n' "$OWNERSHIP_ROWS" | jq -R -s -c \
+            --argjson now "$OWN_NOW" \
+            --argjson keypersonPct "$OWN_KEYPERSON_PCT" \
+            --argjson solePct "$OWN_SOLE_PCT" \
+            --argjson orphanDays "$OWN_ORPHAN_DAYS" \
+            --argjson areaDepth "$OWN_AREA_DEPTH" \
+            --arg anon "$OWN_ANON" \
+            --arg hasMailmap "$OWN_HAS_MAILMAP" \
+            -f "$CHECKUP_HOME/lib/ownership.jq")
+
+        OWN_STATUS=$(echo "$OWNERSHIP_JSON" | jq -r '.status')
+        OWN_COUNT=$(echo "$OWNERSHIP_JSON" | jq -r '.count')
+        OWN_SUMMARY=$(echo "$OWNERSHIP_JSON" | jq -r '.summary')
+        OWN_TOP=$(echo "$OWNERSHIP_JSON" | jq -c '.findings')
+
+        if [ "$OWN_STATUS" = "pass" ]; then
+            echo -e "${GREEN}✅ Knowledge is shared${NC} — $OWN_SUMMARY"
+        else
+            echo -e "${YELLOW}⚠️  $OWN_SUMMARY${NC}"
+            printf "%-18s %-8s %s\n" "Signal" "Severity" "Detail"
+            echo "----------------------------------------------------------------------------------------"
+            echo "$OWN_TOP" | jq -r '
+                .[0:10][]
+                | [ .code, .severity,
+                    (if (.file // "") == "" then .message else (.file + " — " + .message) end) ]
+                | @tsv
+            ' | awk -F'\t' '{ printf "%-18s %-8s %s\n", $1, $2, $3 }'
+            echo ""
+            OWN_ANON_LABEL=""; [ "$OWN_ANON" = "1" ] && OWN_ANON_LABEL="anonymised · "
+            echo "   ${OWN_ANON_LABEL}top 20 in reports/parsed/ownership.json"
+        fi
+
+        write_parsed "ownership" "$OWN_STATUS" "$OWN_COUNT" \
+            "$OWN_SUMMARY" "$OWN_TOP" "$OWNERSHIP_INTENT"
+    fi
+fi
+echo ""
+
+# 24. Documentation Presence (absence-is-signal, #51)
 # section:    docs
 # purpose:    Does the codebase have an entry point to understand it? A repo with
 #             no README/docs forces a newcomer — or an agent — to start with a
@@ -3460,7 +3610,7 @@ else
 fi
 echo ""
 
-# 24. Test Presence (absence-is-signal, #51)
+# 25. Test Presence (absence-is-signal, #51)
 # section:    test-presence
 # purpose:    Is there ANY automated test safety net at all? A broad,
 #             cross-language sweep for test FILES/dirs — deliberately HUMBLE: it
@@ -3561,7 +3711,7 @@ case "$TOPO_SHAPE" in
 esac
 echo ""
 
-# 25. Technology Viability (macro alarm, #52)
+# 26. Technology Viability (macro alarm, #52)
 # section:    tech-viability
 # purpose:    Is this built on a LIVING platform? The single cheapest, loudest
 #             risk signal — a dead/declining stack (Classic ASP, Flash, …) means

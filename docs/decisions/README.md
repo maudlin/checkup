@@ -21,3 +21,4 @@ Format: **Context · Decision · Consequences · Status**.
 | 0007 | [Human-gated merges (agents never self-merge)](0007-human-gated-merges.md) | Accepted |
 | 0008 | [Network isolation as the primary exfiltration control](0008-network-isolation.md) | Accepted |
 | 0009 | [checkup is a deterministic health localiser, not a deploy gate](0009-deterministic-health-localiser.md) | Accepted |
+| 0010 | [Knowledge-concentration (key-person / bus-factor) forensic check](0010-knowledge-concentration-forensic.md) | Accepted |

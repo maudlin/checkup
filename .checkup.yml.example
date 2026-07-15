@@ -72,3 +72,6 @@ thresholds:
   # complexity_ccn_fail: 30    # any function at/above this → the record fails
   # duplication_warn_pct: 3    # duplication % at/above this → warn
   # duplication_fail_pct: 5    # duplication % at/above this → fail
+  # ownership_keyperson_pct_warn: 50    # top author over this % of the code → warn (bus factor)
+  # ownership_sole_author_pct_warn: 50  # single-author files over this % → warn
+  # ownership_orphan_months: 6          # sole author idle ≥ this many months → orphaned knowledge

@@ -257,7 +257,7 @@ The following all work unchanged on any stack:
   has community rulesets for most major languages.
 - **Config-lint** — `yamllint`, `hadolint` are language-neutral.
 - **Git-axis** — `git-hotspots`, `change-coupling`, `bug-fix-density`,
-  `branch-hygiene` are pure git; identical on every stack.
+  `branch-hygiene`, `ownership` are pure git; identical on every stack.
 - **Contract, helpers, renderer** — language-agnostic by design.
 
 The language-specific work is concentrated in the ten npm-script-driven
@@ -300,6 +300,8 @@ finding shape and the rest of the substrate carries it through unchanged.
 | `CHECKUP_SHELL_DIRS`  | `shellcheck` section                      | `scripts .husky .githooks .claude/hooks` | Space-separated dirs to search for shell scripts. Missing dirs are skipped silently.      |
 | `HADOLINT_DOCKERFILE` | `hadolint` section                        | auto-detect `Dockerfile*` at root        | Override the Dockerfile filename when it is named non-conventionally.                     |
 | `MUTATION_TEST`       | `mutation` section                        | unset (skipped)                          | Set to `1` to enable Stryker; opt-in because mutation testing is slow (~2 min).           |
+| `CHECKUP_OWNERSHIP_SINCE` | `ownership` section                   | unset (all history)                      | `git log --since` window for the bus-factor analysis. Ownership is **cumulative**, so the default is all-history (who has ever held the code); set e.g. `2.years.ago` to score only recent tenure. Separate from `CHECKUP_FORENSIC_SINCE`. |
+| `CHECKUP_OWNERSHIP_ANON` | `ownership` section                    | unset (names shown)                      | Set to `1` to replace author names with stable, share-ranked pseudonyms (`Contributor 1`, …) for reports that get shared. Thresholds are tunable via `.checkup.yml thresholds` (`ownership_keyperson_pct_warn`, `ownership_sole_author_pct_warn`, `ownership_orphan_months`). |
 | `RAW_DIR`             | every section (via `run_tool`)            | `reports/raw`                            | Where each section's stdout/stderr capture is written.                                    |
 | `PARSED_DIR`          | every section (via `run_tool`)            | `reports/parsed`                         | Where each section's normalised JSON is written.                                          |
 

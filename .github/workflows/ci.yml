@@ -60,6 +60,9 @@ jobs:
       - name: Calibration tests
         run: bash test/calibration.test.sh
 
+      - name: Ownership transform tests
+        run: bash test/ownership.test.sh
+
   docker-core:
     name: build checkup-core image
     runs-on: ubuntu-latest
